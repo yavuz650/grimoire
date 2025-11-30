@@ -1,161 +1,115 @@
-#include <cuda.h>
 #include <iostream>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
 #include <vector>
 
+#include <cuda.h>
+#include <cuda/barrier>
+// Disables `cuda::barrier` initialization warning.
+#pragma nv_diag_suppress static_var_with_dynamic_init
+
+// All sizes and lengths are in terms of elements, not bytes
 // Vector length
-constexpr int L = 65536*2;
-// Worktile size
-constexpr int N = 1024;
+//constexpr int L = 65536 * 256;
 // Tile size
-constexpr int K = 128;
+constexpr int N = 8192;
+// Buffer size 
+constexpr int K = 4096;
 
-struct WorktileMetadata {
-  volatile int workIdx;
-  // Signals DMA to start working on the workIdx
-  volatile int start;
-  // Initalize to 1
-  volatile int dmaFinished;
-  // Initialize to 1
-  volatile int mathFinished;
-};
+// __device__ void sched(int *workIdxCounter, WorktileMetadata *worktile, TileBufferMetadata *bufferMetadata) {
+//   if(threadIdx.x%32 == 0) {
+//     int workIdx = atomicAdd(workIdxCounter, 1);
+//     while(workIdx < L/N) {
+//       // printf("SCHED: workIdx: %d\n", workIdx);
+//       worktile->workIdx = workIdx;
+//       worktile->dmaFinished = 0;
+//       worktile->mathFinished = 0;
+//       // Clear buffers
+//       bufferMetadata[0].isBufferProcessed = 1;
+//       bufferMetadata[1].isBufferProcessed = 1;
+//       // printf("SCHED: Starting workIdx: %d\n", workIdx);
+//       worktile->start = 1;
+//       // Wait until work finishes
+//       while(!worktile->mathFinished || !worktile->dmaFinished) {}
+//       // printf("SCHED: workIdx: %d finished.\n", workIdx);
+//       worktile->start = 0;
+//       if(threadIdx.x%32 == 0)
+//         workIdx = atomicAdd(workIdxCounter, 1);
+//     }
+//     // No more work left, exit
+//     noWorkLeft = 1;
+//   }
+//   return;
+// }
 
-struct TileBufferMetadata
-{
-  int isBufferProcessed;
-};
-__device__ int workIdxCounter;
-__shared__ int noWorkLeft;
-__device__ void sched(int *workIdxCounter, WorktileMetadata *worktile, TileBufferMetadata *bufferMetadata) {
-  if(threadIdx.x%32 == 0) {
-    int workIdx = atomicAdd(workIdxCounter, 1);
-    while(workIdx < L/N) {
-      // printf("SCHED: workIdx: %d\n", workIdx);
-      worktile->workIdx = workIdx;
-      worktile->dmaFinished = 0;
-      worktile->mathFinished = 0;
-      // Clear buffers
-      bufferMetadata[0].isBufferProcessed = 1;
-      bufferMetadata[1].isBufferProcessed = 1;
-      // printf("SCHED: Starting workIdx: %d\n", workIdx);
-      worktile->start = 1;
-      // Wait until work finishes
-      while(!worktile->mathFinished || !worktile->dmaFinished) {}
-      // printf("SCHED: workIdx: %d finished.\n", workIdx);
-      worktile->start = 0;
-      if(threadIdx.x%32 == 0)
-        workIdx = atomicAdd(workIdxCounter, 1);
+// ***************************************************************************************************************
+// Following the example in CUDA docs...                                                                          |
+// https://docs.nvidia.com/cuda/cuda-c-programming-guide/#spatial-partitioning-also-known-as-warp-specialization  |
+// It appears that the recommended way of implementing warp specialization is by using cuda::barrier structures.  |
+// Barriers provide the mechanism for synchronization between the specialized warps.                              |
+// The example in the document shows a producer/consumer system where the barriers are used for synchronization.  |
+// ***************************************************************************************************************
+
+// DMA is the "producer", i.e. it fills the buffers with data from global memory.
+__device__ void dma(int *buffers, int *A, int *B, cuda::barrier<cuda::thread_scope_block> *ready, cuda::barrier<cuda::thread_scope_block> *filled) {
+  int tileCounter = 0;
+  //int bufferCounter = 0;
+  while(tileCounter != N/K) {
+    int bufferIdx = tileCounter%2;
+    // Wait until buffer becomes ready
+    ready[bufferIdx].arrive_and_wait();
+    // Load A
+    for (int i = 0; i < K/32; i++) {
+      buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] = A[blockIdx.x*N + tileCounter*K + i*32 + threadIdx.x%32];
     }
-    // No more work left, exit
-    noWorkLeft = 1;
-  }
-  return;
-}
-
-__device__ void dma(WorktileMetadata *worktile, TileBufferMetadata *bufferMetadata, int *buffers, int *A, int *B) {
-  while(!noWorkLeft) {
-    int tileCounter = 0;
-    int bufferIdx = 0;
-    while(!worktile->start) {
-      if(noWorkLeft) {
-        // printf("DMA: Exiting\n");
-        return;
-      }
+    // Load B
+    for (int i = 0; i < K/32; i++) {
+      buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32] = B[blockIdx.x*N + tileCounter*K + i*32 + threadIdx.x%32];
     }
-
-    // if(threadIdx.x%32 == 0)
-    //   printf("DMA: workIdx: %d\n", worktile->workIdx);
-    while (tileCounter != N/K) {
-      // if(threadIdx.x%32 == 0)
-      //   printf("DMA: Waiting for buffer to become ready %d, %d, %d\n", bufferMetadata[bufferIdx].isBufferProcessed, worktile->dmaFinished, worktile->start);
-      // Wait until buffer becomes ready
-      while(!bufferMetadata[bufferIdx].isBufferProcessed || worktile->dmaFinished || !worktile->start) {
-        __syncwarp();
-        if(noWorkLeft) {
-          return;
-        }
-      }
-      // Load A
-      for (int i = 0; i < K/32; i++) {
-        buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] = A[worktile->workIdx*N + tileCounter*K + i*32 + threadIdx.x%32];
-      }
-      // Load B
-      for (int i = 0; i < K/32; i++) {
-        buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32] = B[worktile->workIdx*N + tileCounter*K + i*32 + threadIdx.x%32];
-      }
-      bufferMetadata[bufferIdx].isBufferProcessed = 0;
-      bufferIdx = (bufferIdx + 1)%2;
-      tileCounter++;
-    }
-    worktile->dmaFinished = 1;
+    filled[bufferIdx].arrive();
+    //bufferIdx = (bufferIdx + 1)%2;
+    //bufferCounter++;
+    tileCounter++;
   }
 }
 
-__device__ void math(WorktileMetadata *worktile, TileBufferMetadata *bufferMetadata, int *buffers, int *C) {
-  while(!noWorkLeft) {
-    int tileCounter = 0;
-    int bufferIdx = 0;
-    while(!worktile->start) {        
-      if(noWorkLeft) {
-        return;
-      }
-    }
-    while (tileCounter != N/K) {
-      // if(threadIdx.x%32 == 0)
-      //   printf("MATH: Waiting for a filled buffer %d. mathFinished: %d\n",bufferMetadata[bufferIdx].isBufferProcessed, worktile->mathFinished);
-      // Wait until there's a filled buffer
-      while(bufferMetadata[bufferIdx].isBufferProcessed || worktile->mathFinished) {
-        __syncwarp();
-        if(noWorkLeft) {
-          return;
-        }
-      }
-      // C=A+B
-      for (int i = 0; i < K/32; i++) {
-        buffers[bufferIdx*K + 4*K + i*32 + threadIdx.x%32] = buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] + buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32];
-      }
-      // Store C to global memory (?) Might not be optimal
-      for (int i = 0; i < K/32; i++) {
-        C[worktile->workIdx*N + tileCounter*K + i*32 + threadIdx.x%32] = buffers[bufferIdx*K + 4*K + i*32 + threadIdx.x%32];
-      }
-      bufferMetadata[bufferIdx].isBufferProcessed = 1;
-      bufferIdx = (bufferIdx + 1)%2;
-      tileCounter++;
-    }
-    worktile->mathFinished = 1;
+// Math is the "consumer", i.e. it consumes the data in buffers to calculate results and stores to global memory.
+__device__ void math(int *buffers, int *C, cuda::barrier<cuda::thread_scope_block> *ready, cuda::barrier<cuda::thread_scope_block> *filled) {
+  int tileCounter = 0;
+  ready[0].arrive(); // buffer_0 is ready for initial fill
+  ready[1].arrive(); // buffer_1 is ready for initial fill
+  while(tileCounter != N/K) {
+    int bufferIdx = tileCounter%2;
+    // Wait until buffer becomes filled
+    filled[bufferIdx].arrive_and_wait();
+    // Calculate and store C to global memory without buffering (?) Might not be optimal
+    for (int i = 0; i < K/32; i++) {
+      C[blockIdx.x*N + tileCounter*K + i*32 + threadIdx.x%32] = buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] + buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32];
+    }    
+    ready[bufferIdx].arrive();
+    tileCounter++;
   }
 }
 
 // C = A+B
-__global__ void vectorAdd(int *A, int *B, int *C) {
+__global__ void vectorAdd_ws(int *A, int *B, int *C) {
   int warpIdx = threadIdx.x / 32;
-  // Double buffering for tile storage
-  __shared__ WorktileMetadata workIdxMetadata;
-  //__shared__ int noWorkLeft;
-  __shared__ int buffers[2*3*K];
-  __shared__ TileBufferMetadata bufferMetadata[2];
-  bufferMetadata[0].isBufferProcessed = 1;
-  bufferMetadata[1].isBufferProcessed = 1;
-  workIdxMetadata.dmaFinished = 0;
-  workIdxMetadata.mathFinished = 0;
-  workIdxMetadata.start = 0;
-  // Global counter for work(tile) distribution across the CTAs
-  // This will be an atomic variable
-  workIdxCounter = 0;
-  noWorkLeft = 0;
+  // Double buffering for tile storage(2 double-buffers, one for each input so 2*2*K)
+  // A-B-A-B memory layout
+  __shared__ int buffers[2*2*K];
+  __shared__ cuda::barrier<cuda::thread_scope_block> bar[4];
+  if (threadIdx.x < 4)
+    init(bar + threadIdx.x, blockDim.x*blockDim.y*blockDim.z);
+  
   __syncthreads();
   switch (warpIdx)
   {
     case 0:
-      sched(&workIdxCounter, &workIdxMetadata, bufferMetadata);
+      dma(buffers, A, B, &bar[0], &bar[2]);
       break;
     case 1:
-      dma(&workIdxMetadata, bufferMetadata, buffers, A, B);
-      break;
-    case 2:
-      math(&workIdxMetadata, bufferMetadata, buffers, C);
+      math(buffers, C, &bar[0], &bar[2]);
       break;
     // case 3:
     //   math();
@@ -166,7 +120,19 @@ __global__ void vectorAdd(int *A, int *B, int *C) {
   __syncthreads();
 }
 
-int main() {
+__global__ void vectorAdd(int *A, int *B, int *C) {
+  int idx = blockIdx.x*blockDim.x+threadIdx.x;
+  C[idx] = A[idx]+B[idx];
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+      std::cerr << "Usage: " << argv[0] << " <integer>\n";
+      return 1;
+    }
+    int L = std::stoi(argv[1]);
+
+    printf("Vector size in bytes: %d\n", L*sizeof(int));
     // Allocate memory for vectors on the host
     std::vector<int> h_vector1(L);
     std::vector<int> h_vector2(L);
@@ -186,7 +152,6 @@ int main() {
       h_vector4[i] = h_vector1[i] + h_vector2[i];
     }
     const auto t_end = std::chrono::high_resolution_clock::now();
-    std::cout << std::fixed << std::setprecision(2) << std::chrono::duration<double, std::milli>(t_end - t_start).count() << '\n';
 
     printf("First 5 elements A\n");
     for (int i = 0; i < 5; i++) {
@@ -197,7 +162,7 @@ int main() {
       printf("%d\n",h_vector2[i]);
     }
     // Allocate memory for vectors on the GPU
-    int *d_vector1; 
+    int *d_vector1;
     int *d_vector2;
     int *d_vector3;
     cudaError_t err;
@@ -234,15 +199,44 @@ int main() {
       abort();
     }
 
-    dim3 cta(128,1,1);
-    dim3 grid(1,1,1);
+    dim3 cta;
+    dim3 grid;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
     printf("Launching kernel...\n");
+    // Conventional cuda kernel
+    cta = dim3(64,1,1);
+    grid = dim3(L/N,1,1);
+    cudaEventRecord(start);
     vectorAdd<<<grid,cta>>>(d_vector1,d_vector2,d_vector3);
+    cudaEventRecord(stop);
     err = cudaGetLastError();
     if(cudaSuccess != err) {
       printf("Failed to launch kernel! Error code: %d, %s, %d\n", err, __FILE__, __LINE__);
       abort();
     }
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("Finished traditional kernel...\n");
+    
+    printf("Launching WS kernel...\n");
+    cta=dim3(64,1,1);
+    grid=dim3(L/N,1,1);
+    cudaEventRecord(start);
+    vectorAdd_ws<<<grid,cta>>>(d_vector1,d_vector2,d_vector3);
+    cudaEventRecord(stop);
+    err = cudaGetLastError();
+    if(cudaSuccess != err) {
+      printf("Failed to launch kernel! Error code: %d, %s, %d\n", err, __FILE__, __LINE__);
+      abort();
+    }
+    cudaEventSynchronize(stop);
+    float millisecondsWS = 0;
+    cudaEventElapsedTime(&millisecondsWS, start, stop);        
+    printf("Finished WS kernel...\n");
+
     cudaMemcpy(h_vector3.data(), d_vector3, L * sizeof(int), cudaMemcpyDeviceToHost);
     err = cudaGetLastError();
     if(cudaSuccess != err) {
@@ -261,8 +255,12 @@ int main() {
 
     if(h_vector3 != h_vector4)
       printf("Mismatch.\n");
-    else
+    else {
+      std::cout << "CPU time(ms): " << std::fixed << std::setprecision(2) << std::chrono::duration<double, std::milli>(t_end - t_start).count() << '\n';
       printf("Outputs match.\n");
+      printf("WS Kernel execution time(ms): %f\n",millisecondsWS);
+      printf("Conventional Kernel execution time(ms): %f\n",milliseconds);
+    }
 
     // Free device memory
     cudaFree(d_vector1);
