@@ -14,7 +14,7 @@
 constexpr int L = 65536 * 512;
 // Tile size
 constexpr int N = 32768;
-// Buffer size 
+// Buffer size
 constexpr int K = 4096;
 __device__ int globalNextTile = 0;
 __device__ int globalTotalTiles = L/N;
@@ -92,8 +92,8 @@ __device__ void math_persistent(int *buffers, int *C, cuda::barrier<cuda::thread
     //printf("Math Got localTileIdx: %d\n", localTileIdx);
     transition[1].arrive_and_wait();
     if(localTileIdx >= globalTotalTiles)
-      return;    
-    int tileCounter = 0;  
+      return;
+    int tileCounter = 0;
     while(tileCounter != N/K) {
       int bufferIdx = tileCounter%2;
       // Wait until buffer becomes filled
@@ -101,7 +101,7 @@ __device__ void math_persistent(int *buffers, int *C, cuda::barrier<cuda::thread
       // Calculate and store C to global memory without buffering (?) Might not be optimal
       for (int i = 0; i < K/32; i++) {
         C[localTileIdx*N + tileCounter*K + i*32 + threadIdx.x%32] = buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] + buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32];
-      }    
+      }
       ready[bufferIdx].arrive();
       tileCounter++;
     }
@@ -178,7 +178,7 @@ __device__ void math(int *buffers, int *C, cuda::barrier<cuda::thread_scope_bloc
     // Calculate and store C to global memory without buffering (?) Might not be optimal
     for (int i = 0; i < K/32; i++) {
       C[blockIdx.x*N + tileCounter*K + i*32 + threadIdx.x%32] = buffers[bufferIdx*2*K + i*32 + threadIdx.x%32] + buffers[K + bufferIdx*2*K + i*32 + threadIdx.x%32];
-    }    
+    }
     ready[bufferIdx].arrive();
     tileCounter++;
   }
@@ -193,7 +193,7 @@ __global__ void vectorAdd_ws(int *A, int *B, int *C) {
   __shared__ cuda::barrier<cuda::thread_scope_block> bar[4];
   if (threadIdx.x < 4)
     init(bar + threadIdx.x, blockDim.x*blockDim.y*blockDim.z);
-  
+
   __syncthreads();
   switch (warpIdx)
   {
@@ -312,7 +312,7 @@ int main(int argc, char* argv[]) {
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("Finished traditional kernel...\n");
-    
+
     printf("Launching WS kernel...\n");
     cta=dim3(64,1,1);
     grid=dim3(30,1,1);
@@ -326,7 +326,7 @@ int main(int argc, char* argv[]) {
     }
     cudaEventSynchronize(stop);
     float millisecondsWS = 0;
-    cudaEventElapsedTime(&millisecondsWS, start, stop);        
+    cudaEventElapsedTime(&millisecondsWS, start, stop);
     printf("Finished WS kernel...\n");
 
     cudaMemcpy(h_vector3.data(), d_vector3, L * sizeof(int), cudaMemcpyDeviceToHost);
