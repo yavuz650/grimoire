@@ -35,6 +35,8 @@ class Buffer {
   void* getDevicePtr() const { return d_ptr; }
   void* getHostPtr() const { return h_ptr; }
 
+  size_t getNumElems() const { return numElems; }
+
   void copyToDevice() {
     CHECK_CUDA_ERROR(cudaMemcpy(d_ptr, h_ptr, totalBytes, cudaMemcpyHostToDevice));
   }

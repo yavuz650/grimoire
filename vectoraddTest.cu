@@ -5,16 +5,8 @@
 #include <vector>
 
 //#include "warp_specialized_vector_add.cuh"
-#include "pipelined_vector_add.cuh"
+#include "include/vectorAdd.cuh"
 #include "include/buffer.cuh"
-
-// All sizes and lengths are in terms of elements, not bytes
-// Vector length
-// constexpr int L = 65536 * 512;
-// // Tile size
-// constexpr int N = 32768;
-// // Buffer size
-// constexpr int K = 4096;
 
 int main(int argc, char* argv[]) {
   // if (argc < 2) {
