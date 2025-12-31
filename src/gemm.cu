@@ -1,15 +1,17 @@
 #include "gemm.cuh"
+#include "mma_intrinsics.cuh"
 
 // Disables `cuda::barrier` initialization warning.
 #pragma nv_diag_suppress static_var_with_dynamic_init
 
+// assume b is col major for now
 void gemm_cpu(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   int sum;
   for (int r = 0; r < M; r++) {
     for (int c = 0; c < N; c++){
       sum = 0;
       for (int i = 0; i < K; i++) {
-        sum += A[r*K+i] * B[i*N+c];
+        sum += A[r*K+i] * B[c*K+i];
       }
       C[r*N+c] = sum;
     }
@@ -154,3 +156,62 @@ __global__ void gemm_tensorop(int8_t *A, int8_t *B, int *C, int M, int N, int K)
   wmma::store_matrix_sync(C+offsetC, c_frag, N, wmma::mem_row_major);
 }
 
+// Use inline PTX mma instructions to do matrix multiplication
+// s8 * s8 -> s32
+__global__ void mma_m16n8k16_s8_s8(int8_t *A, int ldmA, int8_t *B, int ldmB, int32_t *C) { 
+  __shared__ int8_t smemA[16*16];
+  __shared__ int8_t smemB[16*8];
+  __shared__ int32_t smemC[16*8];
+  // Each thread loads one element in a row
+  if(threadIdx.x < 16) {
+    for (int i = 0; i < 16; i++) {
+      smemA[threadIdx.x*16 + i] = A[threadIdx.x*ldmA + i];
+      if(threadIdx.x < 8)
+        smemB[threadIdx.x*16 + i] = B[threadIdx.x*ldmB + i];
+    }
+  }
+  __syncthreads();
+  // For A, we do x2 8x8 ldmatrix, so the first 15 threads provide row addresses
+  int8_t *a = smemA + (threadIdx.x & 0x1f) * 16;
+  uint32_t smem_a = static_cast<uint32_t>(__cvta_generic_to_shared(a));
+  uint32_t dstA[2];
+  ldmatrix_x2_m8n8_b16(dstA[0], dstA[1], smem_a);
+
+  // For B, we do x1 8x8 ldmatrix
+  int8_t *b = smemB + (threadIdx.x & 0x1f) * 16;
+  uint32_t smem_b = static_cast<uint32_t>(__cvta_generic_to_shared(b));
+  uint32_t dstB;
+  ldmatrix_x1_m8n8_b16(dstB, smem_b);
+
+  uint32_t d[4] = {0, 0, 0, 0};
+  mma_m16n8k16_row_col_s32_s8_s8_s32(d[0], d[1], d[2], d[3], dstA[0], dstA[1], dstB);
+
+  int groupID = threadIdx.x >> 2;
+  int threadID_in_group = threadIdx.x % 4;
+  
+  smemC[groupID*8 + threadID_in_group*2] = d[0];
+  smemC[groupID*8 + threadID_in_group*2 + 1] = d[1];
+  smemC[(groupID+8)*8 + threadID_in_group*2] = d[2];
+  smemC[(groupID+8)*8 + threadID_in_group*2 + 1] = d[3];
+
+// row =      groupID                           for ci where i <  2
+//          groupID + 8                         for ci where i >= 2
+
+// col =  (threadID_in_group * 2) + (i & 0x1)    for ci where i = {0,..,3}
+
+  // This requires sm_90 or above lmao
+  // int32_t *c = smemC + (threadIdx.x & 0x1f) * 16;
+  // uint32_t smem_c = static_cast<uint32_t>(__cvta_generic_to_shared(c));  
+  // asm volatile ("stmatrix.sync.aligned.x4.trans.m8n8.shared.b16 [%0], {%1, %2, %3, %4};\n"
+  //     :: "r"(smem_c),
+  //        "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
+
+  if(threadIdx.x == 0) {
+    for (int i = 0; i < 16; i++) {
+      for (int j = 0; j < 8; j++) {
+        printf("%d ", smemC[i*8+j]);
+      }
+      printf("\n");
+    }
+  }
+}
