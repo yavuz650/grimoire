@@ -18,7 +18,6 @@ void gemm_cpu(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   }
 }
 
-
 // C = A*B
 // A is MxK, B is KxN, C is MxN
 // Everything is row-major
@@ -156,62 +155,57 @@ __global__ void gemm_tensorop(int8_t *A, int8_t *B, int *C, int M, int N, int K)
   wmma::store_matrix_sync(C+offsetC, c_frag, N, wmma::mem_row_major);
 }
 
-// Use inline PTX mma instructions to do matrix multiplication
-// s8 * s8 -> s32
-__global__ void mma_m16n8k16_s8_s8(int8_t *A, int ldmA, int8_t *B, int ldmB, int32_t *C) { 
-  __shared__ int8_t smemA[16*16];
-  __shared__ int8_t smemB[16*8];
-  __shared__ int32_t smemC[16*8];
-  // Each thread loads one element in a row
-  if(threadIdx.x < 16) {
-    for (int i = 0; i < 16; i++) {
-      smemA[threadIdx.x*16 + i] = A[threadIdx.x*ldmA + i];
-      if(threadIdx.x < 8)
-        smemB[threadIdx.x*16 + i] = B[threadIdx.x*ldmB + i];
-    }
-  }
-  __syncthreads();
-  // For A, we do x2 8x8 ldmatrix, so the first 15 threads provide row addresses
-  int8_t *a = smemA + (threadIdx.x & 0x1f) * 16;
-  uint32_t smem_a = static_cast<uint32_t>(__cvta_generic_to_shared(a));
-  uint32_t dstA[2];
-  ldmatrix_x2_m8n8_b16(dstA[0], dstA[1], smem_a);
+// A is row major, B is column major, C is row major
+__global__ void mma_m16n8k16_s8_s8(int8_t *A, int8_t *B, int32_t *C, int M, int N, int K) {
+  constexpr int m=16;
+  constexpr int n=8;
+  constexpr int k=16;
+  int globalWarpIdx = threadIdx.x / 32 + blockIdx.x*blockDim.x/32;
+  int warpRow = globalWarpIdx / (N/n);
+  int warpCol = globalWarpIdx % (N/n);
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
 
-  // For B, we do x1 8x8 ldmatrix
-  int8_t *b = smemB + (threadIdx.x & 0x1f) * 16;
-  uint32_t smem_b = static_cast<uint32_t>(__cvta_generic_to_shared(b));
-  uint32_t dstB;
-  ldmatrix_x1_m8n8_b16(dstB, smem_b);
+  // Assuming 8 warps in each CTA
+  __shared__ int8_t smemA[m*k *8];
+  __shared__ int8_t smemB[k*n *8];
+  __shared__ int32_t smemC[m*n *8];
+  int smemAIdx = localWarpIdx*m*k;
+  int smemBIdx = localWarpIdx*k*n;
+  int smemCIdx = localWarpIdx*m*n;
+  int laneId = threadIdx.x & 31;
 
-  uint32_t d[4] = {0, 0, 0, 0};
-  mma_m16n8k16_row_col_s32_s8_s8_s32(d[0], d[1], d[2], d[3], dstA[0], dstA[1], dstB);
+  for (int i = laneId; i < m*n; i += 32)
+    smemC[smemCIdx + i] = 0;
+  __syncwarp();
 
-  int groupID = threadIdx.x >> 2;
-  int threadID_in_group = threadIdx.x % 4;
-  
-  smemC[groupID*8 + threadID_in_group*2] = d[0];
-  smemC[groupID*8 + threadID_in_group*2 + 1] = d[1];
-  smemC[(groupID+8)*8 + threadID_in_group*2] = d[2];
-  smemC[(groupID+8)*8 + threadID_in_group*2 + 1] = d[3];
-
-// row =      groupID                           for ci where i <  2
-//          groupID + 8                         for ci where i >= 2
-
-// col =  (threadID_in_group * 2) + (i & 0x1)    for ci where i = {0,..,3}
-
-  // This requires sm_90 or above lmao
-  // int32_t *c = smemC + (threadIdx.x & 0x1f) * 16;
-  // uint32_t smem_c = static_cast<uint32_t>(__cvta_generic_to_shared(c));  
-  // asm volatile ("stmatrix.sync.aligned.x4.trans.m8n8.shared.b16 [%0], {%1, %2, %3, %4};\n"
-  //     :: "r"(smem_c),
-  //        "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
-
-  if(threadIdx.x == 0) {
-    for (int i = 0; i < 16; i++) {
-      for (int j = 0; j < 8; j++) {
-        printf("%d ", smemC[i*8+j]);
+  int row, col;
+  for (int tileIdx = 0; tileIdx < K/16; tileIdx++) {
+    // Each thread loads one element in a row/col
+    if(laneId < 16) {
+      for (int i = 0; i < 16; i++) {
+        row = warpRow*m + i;
+        col = tileIdx*k + laneId;
+        smemA[smemAIdx + i*16 + laneId] = A[row*K+col];
+        if(i < 8) {
+          row = tileIdx*k + laneId;
+          col = warpCol*n + i;
+          smemB[smemBIdx + i*16 + laneId] = B[col*K + row];
+        }
       }
-      printf("\n");
+    }
+
+    __syncwarp();
+    mma_m16n8k16_s8_s8_smem(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
+    __syncwarp();
+  }
+
+  // Each thread stores one element in a row
+  if(laneId < 8) {
+    for (int i = 0; i < 16; i++) {
+      row = warpRow*m + i;
+      col = warpCol*n +laneId;
+      C[row*N + col] =  smemC[smemCIdx + i*8 + laneId];
     }
   }
 }

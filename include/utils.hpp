@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <iomanip>
 
 template <typename T>
 bool compareVectors(std::vector<T> &a, std::vector<T> &b) {
@@ -22,5 +23,22 @@ bool compareArrays(T *a, T *b, size_t len) {
     }
   }
   return true;
+}
+
+
+template <typename T>
+void printMatrix(T *matrix, int M, int N, int width=4, bool isRowMajor=true) {
+  for (int i = 0; i < M; ++i) {
+    for (int j = 0; j < N; ++j) {
+      // Row-major: row * width + col
+      // Column-major: col * height + row
+      int index = isRowMajor ? (i * N + j) : (j * M + i);
+      
+      // Use + operator to force numeric output for int8_t/char
+      std::cout << std::setw(width) << +matrix[index] << " ";
+    }
+    std::cout << "\n";
+  }
+  std::cout << std::endl;
 }
 

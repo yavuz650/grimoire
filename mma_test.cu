@@ -23,9 +23,9 @@ int main(int argc, char* argv[]) {
 
   // Define the problem size
   //
-  int M = 16 * 1;
-  int N = 8 * 1;
-  int K = 16 * 1;
+  int M = 16 * 64;
+  int N = 8 * 64;
+  int K = 16 * 64;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(int8_t));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(int8_t));
@@ -45,23 +45,6 @@ int main(int argc, char* argv[]) {
     A[i] = rand() % 20;
   for (int i = 0; i < K*N; ++i)
     B[i] = rand() % 20;
-
-  // A is row major
-  printf("A matrix\n");
-  for (int i = 0; i < 16; i++) {
-    for (size_t j = 0; j < 16; j++) {
-      printf("%d ",A[i*16+j]);
-    } 
-    printf("\n");
-  }
-  // B is column major
-  printf("B matrix\n");
-  for (int i = 0; i < 16; i++) {
-    for (size_t j = 0; j < 8; j++) {
-      printf("%d ", B[i+j*16]);
-    }
-    printf("\n");
-  }
   
   // Copy matrices to device
   A_buffer.copyToDevice();
@@ -73,13 +56,6 @@ int main(int argc, char* argv[]) {
   gemm_cpu(static_cast<int8_t*>(A_buffer.getHostPtr()), static_cast<int8_t*>(B_buffer.getHostPtr()), hostResults.data(), M, N, K);
   const auto t_end = std::chrono::high_resolution_clock::now();
 
-  printf("C matrix\n");
-  for (int i = 0; i < 16; i++) {
-    for (size_t j = 0; j < 8; j++) {
-      printf("%d ", hostResults[i*8+j]);
-    }
-    printf("\n");
-  }
   // Launch MMA kernel ------------------------
   dim3 cta;
   dim3 grid;
@@ -88,10 +64,10 @@ int main(int argc, char* argv[]) {
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
   printf("Launching MMA GPU kernel...\n");
-  cta = dim3(32,1,1);
-  grid = dim3(1,1,1);
+  cta = dim3(256,1,1);
+  grid = dim3((M/16*N/8)/8,1,1);
   cudaEventRecord(start);
-  mma_m16n8k16_s8_s8<<<grid,cta>>>(static_cast<int8_t*>(A_buffer.getDevicePtr()), K, static_cast<int8_t*>(B_buffer.getDevicePtr()), K, static_cast<int32_t*>(C0_buffer.getDevicePtr()));
+  mma_m16n8k16_s8_s8<<<grid,cta>>>(static_cast<int8_t*>(A_buffer.getDevicePtr()), static_cast<int8_t*>(B_buffer.getDevicePtr()), static_cast<int32_t*>(C0_buffer.getDevicePtr()), M, N, K);
   err = cudaGetLastError();
   if(cudaSuccess != err) {
     printf("Failed to launch kernel! Error code: %d, %s, %d\n", err, __FILE__, __LINE__);
@@ -103,10 +79,6 @@ int main(int argc, char* argv[]) {
   cudaEventElapsedTime(&milliseconds, start, stop);
   printf("Finished MMA kernel...\n");
   C0_buffer.copyToHost();
-  printf("First 5 elements MMA kernel\n");
-  for (int i = 0; i < 5; i++) {
-    printf("%d\n",static_cast<int*>(C0_buffer.getHostPtr())[i]);
-  }
   printf("Finished running kernels, checking results...\n");
   // Compare custom GPU kernel to CUTLASS (assuming CUTLASS matches the CPU reference)
   printf("Comparing CPU and MMA\n");

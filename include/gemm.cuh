@@ -19,4 +19,4 @@ __global__ void gemm_tensorop(int8_t *A, int8_t *B, int *C, int M, int N, int K)
 
 __global__ void gemm_tensorop_pipelined(int8_t *A, int8_t *B, int *C, int M, int N, int K);
 
-__global__ void mma_m16n8k16_s8_s8(int8_t *A, int ldmA, int8_t *B, int ldmB, int32_t *C);
+__global__ void mma_m16n8k16_s8_s8(int8_t *A, int8_t *B, int32_t *C, int M, int N, int K);
