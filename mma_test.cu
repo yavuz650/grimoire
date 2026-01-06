@@ -67,7 +67,7 @@ int main(int argc, char* argv[]) {
   cta = dim3(256,1,1);
   grid = dim3((M/16*N/8)/8,1,1);
   cudaEventRecord(start);
-  mma_m16n8k16_s8_s8<<<grid,cta>>>(static_cast<int8_t*>(A_buffer.getDevicePtr()), static_cast<int8_t*>(B_buffer.getDevicePtr()), static_cast<int32_t*>(C0_buffer.getDevicePtr()), M, N, K);
+  mma_m16n8k16_s8_s8_memcpy_async<<<grid,cta>>>(static_cast<int8_t*>(A_buffer.getDevicePtr()), static_cast<int8_t*>(B_buffer.getDevicePtr()), static_cast<int32_t*>(C0_buffer.getDevicePtr()), M, N, K);
   err = cudaGetLastError();
   if(cudaSuccess != err) {
     printf("Failed to launch kernel! Error code: %d, %s, %d\n", err, __FILE__, __LINE__);

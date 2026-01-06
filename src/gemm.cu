@@ -209,3 +209,68 @@ __global__ void mma_m16n8k16_s8_s8(int8_t *A, int8_t *B, int32_t *C, int M, int 
     }
   }
 }
+
+// A is row major, B is column major, C is row major
+__global__ void mma_m16n8k16_s8_s8_memcpy_async(int8_t *A, int8_t *B, int32_t *C, int M, int N, int K) {
+  using namespace nvcuda;
+  constexpr int m=16;
+  constexpr int n=8;
+  constexpr int k=16;
+
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  auto warp = cooperative_groups::tiled_partition<32>(block);
+
+  int globalWarpIdx = threadIdx.x / 32 + blockIdx.x*blockDim.x/32;
+  int warpRow = globalWarpIdx / (N/n);
+  int warpCol = globalWarpIdx % (N/n);
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
+
+  // Assuming 8 warps in each CTA
+  __shared__ int8_t smemA[m*k *8];
+  __shared__ int8_t smemB[k*n *8];
+  __shared__ int32_t smemC[m*n *8];
+  int smemAIdx = localWarpIdx*m*k;
+  int smemBIdx = localWarpIdx*k*n;
+  int smemCIdx = localWarpIdx*m*n;
+  int laneId = threadIdx.x & 31;
+
+  for (int i = laneId; i < m*n; i += 32)
+    smemC[smemCIdx + i] = 0;
+  __syncwarp();
+
+  int row, col;
+  for (int tileIdx = 0; tileIdx < K/16; tileIdx++) {
+    // Each thread loads one element in a row/col
+    //if(laneId < 16) {
+      for (int i = 0; i < 16; i++) {
+        row = warpRow*m + i;
+        //col = tileIdx*k + laneId;
+        col = tileIdx*k;
+        //smemA[smemAIdx + i*16 + laneId] = A[row*K+col];
+        cooperative_groups::memcpy_async(warp, smemA+smemAIdx+i*16, A+row*K+col, sizeof(int8_t) * 16);
+        cooperative_groups::wait(warp); // Joins all threads, waits for all copies to complete
+        
+        if(i < 8 && laneId < 16) {
+          row = tileIdx*k + laneId;
+          col = warpCol*n + i;
+          smemB[smemBIdx + i*16 + laneId] = B[col*K + row];
+        }
+      }
+    //}
+
+    __syncwarp();
+    mma_m16n8k16_s8_s8_smem(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
+    __syncwarp();
+  }
+
+  // Each thread stores one element in a row
+  if(laneId < 8) {
+    for (int i = 0; i < 16; i++) {
+      row = warpRow*m + i;
+      col = warpCol*n +laneId;
+      C[row*N + col] =  smemC[smemCIdx + i*8 + laneId];
+    }
+  }
+}
