@@ -5,15 +5,28 @@
 #pragma nv_diag_suppress static_var_with_dynamic_init
 
 // assume b is col major for now
-void gemm_cpu(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
-  int sum;
+inline int idx_row_major(int r, int c, int ld) {
+    return r * ld + c;
+}
+inline int idx_col_major(int r, int c, int ld) {
+    return c * ld + r;
+}
+void gemm_cpu(int8_t *A, int8_t *B, int *C, int M, int N, int K, bool isARowMajor, bool isBRowMajor) {
   for (int r = 0; r < M; r++) {
-    for (int c = 0; c < N; c++){
-      sum = 0;
+    for (int c = 0; c < N; c++) {
+      int sum = 0;
       for (int i = 0; i < K; i++) {
-        sum += A[r*K+i] * B[c*K+i];
+        int a = isARowMajor
+            ? A[idx_row_major(r, i, K)]
+            : A[idx_col_major(r, i, M)];
+
+        int b = isBRowMajor
+            ? B[idx_row_major(i, c, N)]
+            : B[idx_col_major(i, c, K)];
+
+        sum += a * b;
       }
-      C[r*N+c] = sum;
+      C[r * N + c] = sum;  // C is row-major
     }
   }
 }
@@ -33,6 +46,7 @@ __global__ void gemm(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   C[N*r+c] = sum;
 }
 
+// Doesn't work
 __global__ void gemm_tensorop_pipelined(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   using namespace nvcuda;
   constexpr int stagesCount = 2;
@@ -125,7 +139,9 @@ __global__ void gemm_tensorop_pipelined(int8_t *A, int8_t *B, int *C, int M, int
   wmma::store_matrix_sync(C+offsetC, c_frag, N, wmma::mem_row_major);
 }
 
-__global__ void gemm_tensorop(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
+
+// A is row major, B is col major
+__global__ void gemm_tensorop_row_col(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   using namespace nvcuda;
   // warpidx = idx within the block(threadidx.x / 32) + number of warps before this warp(blockidx.x*blockDim.x/32)
   int warpIdx = threadIdx.x / 32 + blockIdx.x*blockDim.x/32;
@@ -134,19 +150,19 @@ __global__ void gemm_tensorop(int8_t *A, int8_t *B, int *C, int M, int N, int K)
 
   // Declare the fragments
   wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major> a_frag;
-  wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::row_major> b_frag;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> b_frag;
   wmma::fragment<wmma::accumulator, 16, 16, 16, int> c_frag;
   // Initialize the output to zero
   wmma::fill_fragment(c_frag, 0);
 
   int offsetA = warpRow*K*16;
-  int offsetB = warpCol*16;
+  int offsetB = warpCol*K*16;
   int offsetC = warpRow*N*16 + warpCol*16;
 
   for (int i = 0; i < K/16; i++) {
     // Load the inputs
     wmma::load_matrix_sync(a_frag, A + offsetA + i*16, K);
-    wmma::load_matrix_sync(b_frag, B + offsetB + i*N*16, N);
+    wmma::load_matrix_sync(b_frag, B + offsetB + i*16, K);
 
     // Perform the matrix multiplication
     wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
@@ -251,7 +267,7 @@ __global__ void mma_m16n8k16_s8_s8_memcpy_async(int8_t *A, int8_t *B, int32_t *C
         //smemA[smemAIdx + i*16 + laneId] = A[row*K+col];
         cooperative_groups::memcpy_async(warp, smemA+smemAIdx+i*16, A+row*K+col, sizeof(int8_t) * 16);
         cooperative_groups::wait(warp); // Joins all threads, waits for all copies to complete
-        
+
         if(i < 8 && laneId < 16) {
           row = tileIdx*k + laneId;
           col = warpCol*n + i;
@@ -266,6 +282,120 @@ __global__ void mma_m16n8k16_s8_s8_memcpy_async(int8_t *A, int8_t *B, int32_t *C
   }
 
   // Each thread stores one element in a row
+  if(laneId < 8) {
+    for (int i = 0; i < 16; i++) {
+      row = warpRow*m + i;
+      col = warpCol*n +laneId;
+      C[row*N + col] =  smemC[smemCIdx + i*8 + laneId];
+    }
+  }
+}
+
+// A is row major, B is column major, C is row major
+// Each CTA calculates a 32x32 tile of the output
+__global__ void mma_m16n8k16_s8_s8_pipelined_row_col(int8_t *A, int8_t *B, int32_t *C, int M, int N, int K) {
+  using namespace nvcuda;
+  constexpr int m=16;
+  constexpr int n=8;
+  constexpr int k=16;
+  constexpr int stagesCount = 2;
+
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  auto warp = cooperative_groups::tiled_partition<32>(block);
+
+  // Two batches must fit in shared memory:
+  //extern __shared__ int shared[]; // *2 for A and B, stagesCount*(16*16*2 + 16*32)
+  size_t sharedOffsetA[stagesCount] = { 0, 16*32 }; // Offsets to each batch
+  size_t sharedOffsetB[stagesCount] = { 0, 16*32 }; // Offsets to each batch
+
+  // Allocate shared storage for a two-stage cuda::pipeline:
+  __shared__ cuda::pipeline_shared_state<
+      cuda::thread_scope::thread_scope_block,
+      stagesCount
+  > sharedState;
+  auto pipeline = cuda::make_pipeline(block, &sharedState);
+
+  //int globalWarpIdx = threadIdx.x / 32 + blockIdx.x*blockDim.x/32;
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
+
+  int blockRow = block.group_index().x / (N/32);
+  int blockCol = block.group_index().x % (N/32);
+  int warpRow = blockRow*2 + localWarpIdx / 4;
+  int warpCol = blockCol*4 + localWarpIdx % 4;
+
+  // Assuming 8 warps in each CTA
+  __shared__ __align__(16) int8_t smemA[m*k*2 * stagesCount];
+  __shared__ __align__(16) int8_t smemB[k*n*4 * stagesCount];
+  __shared__ __align__(16) int32_t smemC[m*n *8];
+  int smemAIdx = localWarpIdx*m*k;
+  int smemBIdx = localWarpIdx*k*n;
+  int smemCIdx = localWarpIdx*m*n;
+  int laneId = threadIdx.x & 31;
+  int row, col;
+
+  for (int i = laneId; i < m*n; i += 32)
+    smemC[smemCIdx + i] = 0;
+  block.sync();
+
+  // Initialize first pipeline stage by submitting a `memcpy_async` to fetch a whole batch for A and B:
+  // if (batch_sz == 0) return;
+  pipeline.producer_acquire();
+  for (int i = 0; i < 32; i++) {
+    row = blockRow*32 + i;
+    cuda::memcpy_async(block, smemA+sharedOffsetA[0] + i*16, A+row*K, sizeof(int8_t) * 16, pipeline);
+    col = blockCol*32 + i;
+    cuda::memcpy_async(block, smemB+sharedOffsetB[0] + i*16, B+col*K, sizeof(int8_t) * 16, pipeline);
+  }
+  pipeline.producer_commit();
+
+  size_t computeStageIdx;
+  size_t copyStageIdx;
+  size_t batch;
+  // Pipelined copy/compute:
+  for (batch = 1; batch < K/16; ++batch) {
+    // Stage indices for the compute and copy stages:
+    computeStageIdx = (batch - 1) % 2;
+    copyStageIdx = batch % 2;
+
+    // Collectively acquire the pipeline head stage from all producer threads:
+    pipeline.producer_acquire();
+
+    // Submit async copies to the pipeline's head stage to be
+    // computed in the next loop iteration
+    for (int i = 0; i < 32; i++) {
+      row = blockRow*32 + i;
+      col = batch*16;
+      cuda::memcpy_async(block, smemA+sharedOffsetA[copyStageIdx] + i*16, A + row*K + col, sizeof(int8_t) * 16, pipeline);
+      row = batch*16;
+      col = blockCol*32 + i;
+      cuda::memcpy_async(block, smemB+sharedOffsetB[copyStageIdx] + i*16, B + row + col*K, sizeof(int8_t) * 16, pipeline);
+    }
+    // Collectively commit (advance) the pipeline's head stage
+    pipeline.producer_commit();
+
+    // Collectively wait for the operations committed to the
+    // previous `compute` stage to complete:
+    pipeline.consumer_wait();
+    // Computation overlapped with the memcpy_async of the "copy" stage:
+    mma_m16n8k16_s8_s8_smem(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
+
+    // Collectively release the stage resources
+    pipeline.consumer_release();
+  }
+  computeStageIdx = (batch - 1) % 2;
+  // Compute the data fetch by the last iteration
+  pipeline.consumer_wait();
+  mma_m16n8k16_s8_s8_smem(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
+  pipeline.consumer_release();  
+
+  // Each thread stores one element in a row
+  // for (int i = 0; i < 32; i++) {
+  //   row = blockRow*32 + i;
+  //   col = blockCol*32;
+  //   cuda::memcpy_async(block, C+row*N+col, smemC + i*32, sizeof(int32_t) * 32, pipeline);
+  // }  
   if(laneId < 8) {
     for (int i = 0; i < 16; i++) {
       row = warpRow*m + i;

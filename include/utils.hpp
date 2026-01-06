@@ -22,6 +22,7 @@ bool compareArrays(T *a, T *b, size_t len) {
       return false;
     }
   }
+  std::cout << "Outputs match\n";
   return true;
 }
 
