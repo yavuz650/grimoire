@@ -23,8 +23,8 @@ int main(int argc, char* argv[]) {
 
   // Define the problem size
   //
-  int M = 1024;
-  int N = 512;
+  int M = 256;
+  int N = 256;
   int K = 256;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(int8_t));
@@ -83,7 +83,7 @@ int main(int argc, char* argv[]) {
   printf("Finished MMA kernel...\n");
   C0_buffer.copyToHost();
 
-  printf("Launching Pipelined MMA GPU kernel...\n");
+  printf("Launching Pipelined Row/Col MMA GPU kernel...\n");
   cta = dim3(256,1,1);
   grid = dim3((M/16*N/8)/8,1,1);
   cudaEventRecord(start);
@@ -121,6 +121,8 @@ int main(int argc, char* argv[]) {
 
   printf("Finished running kernels, checking results...\n");
   // Compare custom GPU kernel to CUTLASS (assuming CUTLASS matches the CPU reference)
+  printf("Comparing CPU and MMA\n");
+  compareArrays(hostResults.data(), static_cast<int*>(C0_buffer.getHostPtr()), C0_buffer.getNumElems());
   printf("Comparing CPU and MMA\n");
   compareArrays(hostResults.data(), static_cast<int*>(C1_buffer.getHostPtr()), C1_buffer.getNumElems());
   printf("Comparing CPU and WMMA\n");
