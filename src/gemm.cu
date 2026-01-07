@@ -4,33 +4,6 @@
 // Disables `cuda::barrier` initialization warning.
 #pragma nv_diag_suppress static_var_with_dynamic_init
 
-// assume b is col major for now
-inline int idx_row_major(int r, int c, int ld) {
-    return r * ld + c;
-}
-inline int idx_col_major(int r, int c, int ld) {
-    return c * ld + r;
-}
-void gemm_cpu(int8_t *A, int8_t *B, int *C, int M, int N, int K, bool isARowMajor, bool isBRowMajor) {
-  for (int r = 0; r < M; r++) {
-    for (int c = 0; c < N; c++) {
-      int sum = 0;
-      for (int i = 0; i < K; i++) {
-        int a = isARowMajor
-            ? A[idx_row_major(r, i, K)]
-            : A[idx_col_major(r, i, M)];
-
-        int b = isBRowMajor
-            ? B[idx_row_major(i, c, N)]
-            : B[idx_col_major(i, c, K)];
-
-        sum += a * b;
-      }
-      C[r * N + c] = sum;  // C is row-major
-    }
-  }
-}
-
 // C = A*B
 // A is MxK, B is KxN, C is MxN
 // Everything is row-major
@@ -139,7 +112,6 @@ __global__ void gemm_tensorop_pipelined(int8_t *A, int8_t *B, int *C, int M, int
   wmma::store_matrix_sync(C+offsetC, c_frag, N, wmma::mem_row_major);
 }
 
-
 // A is row major, B is col major
 __global__ void gemm_tensorop_row_col(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
   using namespace nvcuda;
@@ -212,7 +184,7 @@ __global__ void mma_m16n8k16_s8_s8(int8_t *A, int8_t *B, int32_t *C, int M, int 
     }
 
     __syncwarp();
-    mma_m16n8k16_s8_s8_smem(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
+    mma_m16n8k16_s8_s8_smem_row_col(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
     __syncwarp();
   }
 
@@ -277,7 +249,7 @@ __global__ void mma_m16n8k16_s8_s8_memcpy_async(int8_t *A, int8_t *B, int32_t *C
     //}
 
     __syncwarp();
-    mma_m16n8k16_s8_s8_smem(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
+    mma_m16n8k16_s8_s8_smem_row_col(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
     __syncwarp();
   }
 
@@ -379,7 +351,7 @@ __global__ void mma_m16n8k16_s8_s8_pipelined_row_col(int8_t *A, int8_t *B, int32
     // previous `compute` stage to complete:
     pipeline.consumer_wait();
     // Computation overlapped with the memcpy_async of the "copy" stage:
-    mma_m16n8k16_s8_s8_smem(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
+    mma_m16n8k16_s8_s8_smem_row_col(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
 
     // Collectively release the stage resources
     pipeline.consumer_release();
@@ -387,7 +359,7 @@ __global__ void mma_m16n8k16_s8_s8_pipelined_row_col(int8_t *A, int8_t *B, int32
   computeStageIdx = (batch - 1) % 2;
   // Compute the data fetch by the last iteration
   pipeline.consumer_wait();
-  mma_m16n8k16_s8_s8_smem(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
+  mma_m16n8k16_s8_s8_smem_row_col(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*16*8, smemC+smemCIdx);
   pipeline.consumer_release();  
 
   // Each thread stores one element in a row
@@ -396,6 +368,61 @@ __global__ void mma_m16n8k16_s8_s8_pipelined_row_col(int8_t *A, int8_t *B, int32
   //   col = blockCol*32;
   //   cuda::memcpy_async(block, C+row*N+col, smemC + i*32, sizeof(int32_t) * 32, pipeline);
   // }  
+  if(laneId < 8) {
+    for (int i = 0; i < 16; i++) {
+      row = warpRow*m + i;
+      col = warpCol*n +laneId;
+      C[row*N + col] =  smemC[smemCIdx + i*8 + laneId];
+    }
+  }
+}
+
+// A is row major, B is column major, C is row major
+__global__ void mma_m16n8k16_f16_f16(__half *A, __half *B, float *C, int M, int N, int K) {
+  constexpr int m=16;
+  constexpr int n=8;
+  constexpr int k=16;
+  int globalWarpIdx = threadIdx.x / 32 + blockIdx.x*blockDim.x/32;
+  int warpRow = globalWarpIdx / (N/n);
+  int warpCol = globalWarpIdx % (N/n);
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
+
+  // Assuming 8 warps in each CTA
+  __shared__ __half smemA[m*k *8];
+  __shared__ __half smemB[k*n *8];
+  __shared__ float smemC[m*n *8];
+  int smemAIdx = localWarpIdx*m*k;
+  int smemBIdx = localWarpIdx*k*n;
+  int smemCIdx = localWarpIdx*m*n;
+  int laneId = threadIdx.x & 31;
+
+  for (int i = laneId; i < m*n; i += 32)
+    smemC[smemCIdx + i] = 0;
+  __syncwarp();
+
+  int row, col;
+  for (int tileIdx = 0; tileIdx < K/16; tileIdx++) {
+    // Each thread loads one element in a row/col
+    if(laneId < 16) {
+      for (int i = 0; i < 16; i++) {
+        row = warpRow*m + i;
+        col = tileIdx*k + laneId;
+        smemA[smemAIdx + i*16 + laneId] = A[row*K+col];
+        if(i < 8) {
+          row = tileIdx*k + laneId;
+          col = warpCol*n + i;
+          smemB[smemBIdx + i*16 + laneId] = B[col*K + row];
+        }
+      }
+    }
+
+    __syncwarp();
+    mma_m16n8k16_f16_f16_smem_row_col(smemA+smemAIdx, smemB+smemBIdx, smemC+smemCIdx);
+    __syncwarp();
+  }
+
+  // Each thread stores one element in a row
   if(laneId < 8) {
     for (int i = 0; i < 16; i++) {
       row = warpRow*m + i;
