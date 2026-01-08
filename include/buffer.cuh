@@ -1,15 +1,11 @@
+#ifndef __BUFFER_CUH__
+#define __BUFFER_CUH__
+
 #include <cuda.h>
 #include <iostream>
 #include <stdexcept>
 
-// Error checking macro
-#define CHECK_CUDA_ERROR(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char *file, int line) {
-  if (code != cudaSuccess) {
-    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-    abort();
-  }
-}
+#include "utils.hpp"
 
 class Buffer {
  private:
@@ -48,3 +44,5 @@ class Buffer {
   Buffer(const Buffer&) = delete;
   Buffer& operator=(const Buffer&) = delete;
 };
+
+#endif /* __BUFFER_CUH__ */

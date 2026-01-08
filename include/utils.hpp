@@ -1,3 +1,6 @@
+#ifndef __UTILS_HPP__
+#define __UTILS_HPP__
+
 #include <iostream>
 #include <vector>
 #include <iomanip>
@@ -5,6 +8,15 @@
 #include <cmath>
 
 #include <cuda_fp16.h>
+
+// Error checking macro
+#define CHECK_CUDA_ERROR(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line) {
+  if (code != cudaSuccess) {
+    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    abort();
+  }
+}
 
 template <typename T>
 bool compareVectors(std::vector<T> &a, std::vector<T> &b) {
@@ -80,3 +92,49 @@ void printMatrix(T *matrix, int M, int N, int width = 4, bool isRowMajor = true)
   std::cout << std::endl;
 }
 
+
+template <typename Kernel, typename... Args>
+float launchAndTimeKernel(
+    Kernel kernel,
+    dim3 gridDim,
+    dim3 blockDim,
+    int warmupIters=2,
+    int timedIters=5,
+    Args&&... args)
+{
+  cudaEvent_t start, stop;
+  CHECK_CUDA_ERROR(cudaEventCreate(&start));
+  CHECK_CUDA_ERROR(cudaEventCreate(&stop));
+
+  // --------------------
+  // Warm-up
+  // --------------------
+  for (int i = 0; i < warmupIters; ++i) {
+    kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+  }
+  CHECK_CUDA_ERROR(cudaGetLastError());
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+  // --------------------
+  // Timed runs
+  // --------------------
+  CHECK_CUDA_ERROR(cudaEventRecord(start));
+  for (int i = 0; i < timedIters; ++i) {
+    kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+  }
+  CHECK_CUDA_ERROR(cudaEventRecord(stop));
+
+  CHECK_CUDA_ERROR(cudaGetLastError());
+  CHECK_CUDA_ERROR(cudaEventSynchronize(stop));
+
+  float ms = 0.0f;
+  CHECK_CUDA_ERROR(cudaEventElapsedTime(&ms, start, stop));
+
+  CHECK_CUDA_ERROR(cudaEventDestroy(start));
+  CHECK_CUDA_ERROR(cudaEventDestroy(stop));
+
+  // Average time per launch
+  return ms / timedIters;
+}
+
+#endif /* __UTILS_HPP__ */
