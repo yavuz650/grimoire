@@ -1,3 +1,6 @@
+#ifndef __MMA_INTRINSICS_CUH__
+#define __MMA_INTRINSICS_CUH__
+
 #include <mma.h>
 
 __device__ void ldmatrix_x4_m8n8_b16(uint32_t &dst0, uint32_t &dst1, uint32_t &dst2, uint32_t &dst3, uint32_t src) {
@@ -111,3 +114,5 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C
                                        C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1], 
                                        dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
 }
+
+#endif /* __MMA_INTRINSICS_CUH__ */
