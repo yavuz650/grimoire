@@ -24,9 +24,9 @@ int main(int argc, char* argv[]) {
 
   // Define the problem size
   //
-  int M = 256;
-  int N = 256;
-  int K = 256;
+  int M = 512;
+  int N = 512;
+  int K = 512;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
   // CPU results
   std::vector<float> hostResults(M*N, 0);
   auto t_start = std::chrono::high_resolution_clock::now();
-  gemm_cpu(static_cast<__half*>(A_buffer.getHostPtr()), static_cast<__half*>(B_buffer.getHostPtr()), hostResults.data(), M, N, K, true, false);
+  gemm_cpu(static_cast<__half*>(A_buffer.getHostPtr()), static_cast<__half*>(B_buffer.getHostPtr()), hostResults.data(), M, N, K, false, true);
   const auto t_end = std::chrono::high_resolution_clock::now();
 
   // Launch MMA kernel ------------------------
@@ -74,28 +74,34 @@ int main(int argc, char* argv[]) {
   printf("Launching MMA GPU kernel...\n");
   cta = dim3(256,1,1);
   grid = dim3((M/16*N/8)/8,1,1);
-  cudaEventRecord(start);
-  mma_m16n8k16_f16_f16<<<grid,cta>>>(static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  err = cudaGetLastError();
-  if(cudaSuccess != err) {
-    printf("Failed to launch kernel! Error code: %d, %s, %d\n", err, __FILE__, __LINE__);
-    abort();
-  }
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
-  float milliseconds = 0;
-  cudaEventElapsedTime(&milliseconds, start, stop);
+  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
+  printf("Custom GPU kernel Row/Col execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost();
+  
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::RowMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom GPU kernel Row/Row execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();
+
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::ColMajor, Layout::RowMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom GPU kernel Col/Row execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();
+
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::ColMajor, Layout::ColMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom GPU kernel Col/Col execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();  
 
   using ElementOutput = float;
   using ElementAccumulator = float;
 
   using Gemm = cutlass::gemm::device::Gemm<
       cutlass::half_t, 
-      cutlass::layout::RowMajor, 
-      cutlass::half_t,
       cutlass::layout::ColumnMajor, 
+      cutlass::half_t,
+      cutlass::layout::RowMajor, 
       float, 
       cutlass::layout::RowMajor,
       float, 
@@ -148,11 +154,9 @@ int main(int argc, char* argv[]) {
   printf("Finished running kernels, checking results...\n");
   printf("Comparing CPU and CUTLASS\n");
   compareArrays(hostResults.data(), static_cast<float*>(C1_buffer.getHostPtr()), C1_buffer.getNumElems());
-  printf("Comparing CPU and MMA\n");
-  compareArrays(hostResults.data(), static_cast<float*>(C0_buffer.getHostPtr()), C0_buffer.getNumElems());
 
   std::cout << "CPU time(ms): " << std::fixed << std::setprecision(2) << std::chrono::duration<double, std::milli>(t_end - t_start).count() << '\n';
-  printf("Custom GPU kernel execution time(ms): %f\n", milliseconds);
+  printf("CUTLASS kernel execution time(ms): %f\n", cutlass_milliseconds);
 
   return 0;
 }
