@@ -18,7 +18,7 @@ __device__ void ldmatrix_x4_trans_m8n8_b16(uint32_t &dst0, uint32_t &dst1, uint3
 __device__ void ldmatrix_x2_m8n8_b16(uint32_t &dst0, uint32_t &dst1, uint32_t src) {
   asm volatile ("ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%0, %1}, [%2];\n"
         : "=r"(dst0), "=r"(dst1)
-        :  "r"(src));   
+        :  "r"(src));
 }
 
 __device__ void ldmatrix_x2_trans_m8n8_b16(uint32_t &dst0, uint32_t &dst1, uint32_t src) {
@@ -86,13 +86,14 @@ __device__ void mma_m16n8k16_s8_s8_smem_row_col(int8_t *A, int8_t *B, int32_t *C
   int threadID_in_group = laneID % 4;
 
   mma_m16n8k16_row_col_s32_s8_s8_s32(C[groupID*8+threadID_in_group*2], C[groupID*8+threadID_in_group*2 + 1],
-                                     C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1], 
+                                     C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1],
                                      dstA[0], dstA[1], dstB);
 }
 
 // Use inline PTX mma instructions to do matrix multiplication
 // f16 * f16 -> f32
 // All inputs and outputs are supposed to be in shared memory
+// A is row major in shared memory, and B is column major in shared memory
 __device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16) {
   // For A, we do x4 8x8 ldmatrix, so the first 32 threads provide row addresses
   int laneID = threadIdx.x & 31;
@@ -111,7 +112,31 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C
   int threadID_in_group = laneID % 4;
 
   mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*8+threadID_in_group*2], C[groupID*8+threadID_in_group*2 + 1],
-                                       C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1], 
+                                       C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1],
+                                       dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
+}
+
+// A is col major in shared memory, and B is row major in shared memory
+__device__ void mma_m16n8k16_f16_f16_smem_col_row(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16) {
+  // For A, we do x4 8x8 ldmatrix, so the first 32 threads provide row addresses
+  int laneID = threadIdx.x & 31;
+  __half *a = laneID >= 16 ? A + (laneID%16)*ldmA + 8 : A + laneID * ldmA;
+  uint32_t cvt_a = static_cast<uint32_t>(__cvta_generic_to_shared(a));
+  uint32_t dstA[4];
+  ldmatrix_x4_trans_m8n8_b16(dstA[0], dstA[2], dstA[1], dstA[3], cvt_a);
+
+  // For B, we do x2 8x8 ldmatrix
+  //__half *b = laneID >= 8 ? B + (laneID%8)*ldmB + 8 : B + laneID * ldmB;
+  __half *b = B + laneID * ldmB;
+  uint32_t cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(b));
+  uint32_t dstB[2];
+  ldmatrix_x2_trans_m8n8_b16(dstB[0], dstB[1], cvt_b);
+
+  int groupID = laneID >> 2;
+  int threadID_in_group = laneID % 4;
+
+  mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*8+threadID_in_group*2], C[groupID*8+threadID_in_group*2 + 1],
+                                       C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1],
                                        dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
 }
 

@@ -486,4 +486,110 @@ __global__ void mma_m16n8k16_f16_f16(__half *A, __half *B, float *C, int M, int 
   }
 }
 
+
+// A is col, B is row 
+__global__ void mma_m16n8k16_f16_f16_pipelined_NT(__half *A, __half *B, float *C, int M, int N, int K) {
+  using namespace nvcuda;
+  constexpr int m=16;
+  constexpr int n=8;
+  constexpr int k=16;
+  constexpr int stagesCount = 2;
+
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+
+  // Two batches must fit in shared memory:
+  //extern __shared__ int shared[]; // *2 for A and B, stagesCount*(16*16*2 + 16*32)
+  size_t sharedOffsetA[stagesCount] = { 0, 16*32 }; // Offsets to each batch
+  size_t sharedOffsetB[stagesCount] = { 0, 16*32 }; // Offsets to each batch
+
+  // Allocate shared storage for a two-stage cuda::pipeline:
+  __shared__ cuda::pipeline_shared_state<
+      cuda::thread_scope::thread_scope_block,
+      stagesCount
+  > sharedState;
+  auto pipeline = cuda::make_pipeline(block, &sharedState);
+
+  int blockRow = block.group_index().x / (N/32);
+  int blockCol = block.group_index().x % (N/32);
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
+  int warpRow = blockRow*2 + localWarpIdx / 4;
+  int warpCol = blockCol*4 + localWarpIdx % 4;  
+
+  // Assuming 8 warps in each CTA
+  __shared__ __align__(16) __half smemA[m*k*2 *stagesCount];
+  __shared__ __align__(16) __half smemB[k*n*4 *stagesCount];
+  __shared__ __align__(16) float smemC[m*n *8];
+  int smemCIdx = localWarpIdx*m*n;
+  int laneId = threadIdx.x & 31;
+
+  for (int i = laneId; i < m*n; i += 32)
+    smemC[smemCIdx + i] = 0;
+  block.sync();
+
+  int row, col;
+  // Initialize first pipeline stage by submitting a `memcpy_async` to fetch a whole batch for A and B:
+  // if (batch_sz == 0) return;
+  pipeline.producer_acquire();
+  for (int i = 0; i < 16; i++) {
+    row = blockRow*32;
+    col = i;
+    cuda::memcpy_async(block, smemA+sharedOffsetA[0] + i*32, A+col*M+row, sizeof(__half) * 32, pipeline);
+    row = i;
+    col = blockCol*32;
+    cuda::memcpy_async(block, smemB+sharedOffsetB[0] + i*32, B+row*N+col, sizeof(__half) * 32, pipeline);
+  }
+  pipeline.producer_commit();
+
+  size_t computeStageIdx;
+  size_t copyStageIdx;
+  size_t batch;
+  // Pipelined copy/compute:
+  for (batch = 1; batch < K/16; ++batch) {
+    // Stage indices for the compute and copy stages:
+    computeStageIdx = (batch - 1) % stagesCount;
+    copyStageIdx = batch % stagesCount;
+
+    // Collectively acquire the pipeline head stage from all producer threads:
+    pipeline.producer_acquire();
+
+    // Submit async copies to the pipeline's head stage to be
+    // computed in the next loop iteration
+    for (int i = 0; i < 16; i++) {
+      row = blockRow*32;
+      col = batch*16 + i;
+      cuda::memcpy_async(block, smemA+sharedOffsetA[copyStageIdx] + i*32, A + col*M + row, sizeof(__half) * 32, pipeline);
+      row = batch*16 + i;
+      col = blockCol*32;
+      cuda::memcpy_async(block, smemB+sharedOffsetB[copyStageIdx] + i*32, B + row*N + col, sizeof(__half) * 32, pipeline);
+    }
+    // Collectively commit (advance) the pipeline's head stage
+    pipeline.producer_commit();
+
+    // Collectively wait for the operations committed to the
+    // previous `compute` stage to complete:
+    pipeline.consumer_wait();
+    // Computation overlapped with the memcpy_async of the "copy" stage:
+    mma_m16n8k16_f16_f16_smem_col_row(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*8, smemC+smemCIdx, 32, 32);
+
+    // Collectively release the stage resources
+    pipeline.consumer_release();
+  }
+  computeStageIdx = (batch - 1) % stagesCount;
+  // Compute the data fetch by the last iteration
+  pipeline.consumer_wait();
+  mma_m16n8k16_f16_f16_smem_col_row(smemA+sharedOffsetA[computeStageIdx]+(localWarpIdx/4)*16, smemB+sharedOffsetB[computeStageIdx]+(localWarpIdx%4)*8, smemC+smemCIdx, 32, 32);
+  pipeline.consumer_release();  
+
+  // Each thread stores one element in a row
+  if(laneId < 8) {
+    for (int i = 0; i < 16; i++) {
+      row = warpRow*m + i;
+      col = warpCol*n +laneId;
+      C[row*N + col] =  smemC[smemCIdx + i*8 + laneId];
+    }
+  }
+}
+
 #endif

@@ -92,7 +92,15 @@ int main(int argc, char* argv[]) {
   milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::ColMajor, Layout::ColMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
   printf("Custom GPU kernel Col/Col execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();  
+  C0_buffer.copyToHost();
+
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_pipelined_NT, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom Pipelined GPU kernel execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();
+  printf("Comparing CPU and Pipelined\n");
+  compareArrays(hostResults.data(), static_cast<float*>(C0_buffer.getHostPtr()), C0_buffer.getNumElems());
+  
 
   using ElementOutput = float;
   using ElementAccumulator = float;
