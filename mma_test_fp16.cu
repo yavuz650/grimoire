@@ -5,7 +5,6 @@
 #include <vector>
 #include <cuda_fp16.h>
 
-//#include "warp_specialized_vector_add.cuh"
 #include "include/gemm.cuh"
 #include "include/buffer.cuh"
 #include "include/utils.hpp"
@@ -23,10 +22,9 @@ int main(int argc, char* argv[]) {
   // int L = std::stoi(argv[1]);
 
   // Define the problem size
-  //
-  int M = 512;
-  int N = 512;
-  int K = 512;
+  int M = 64;
+  int N = 64;
+  int K = 64;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -36,7 +34,6 @@ int main(int argc, char* argv[]) {
 
   Buffer C0_buffer(M*N,sizeof(float)); // For the MMA kernel
   Buffer C1_buffer(M*N,sizeof(float)); // For CUTLASS kernel
-  // Buffer C2_buffer(M*N,sizeof(__half)); // For the WMMA kernel
 
   // Initialize random seed
   srand(static_cast<unsigned>(time(nullptr)));
@@ -56,12 +53,6 @@ int main(int argc, char* argv[]) {
   // Copy matrices to device
   A_buffer.copyToDevice();
   B_buffer.copyToDevice();
-
-  // CPU results
-  std::vector<float> hostResults(M*N, 0);
-  auto t_start = std::chrono::high_resolution_clock::now();
-  gemm_cpu(static_cast<__half*>(A_buffer.getHostPtr()), static_cast<__half*>(B_buffer.getHostPtr()), hostResults.data(), M, N, K, false, true);
-  const auto t_end = std::chrono::high_resolution_clock::now();
 
   // Launch MMA kernel ------------------------
   dim3 cta;
@@ -96,20 +87,24 @@ int main(int argc, char* argv[]) {
 
   milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_pipelined_NT, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
-  printf("Custom Pipelined GPU kernel execution time(ms): %f\n", milliseconds);
+  printf("Custom Pipelined GPU kernel (old) execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost();
-  printf("Comparing CPU and Pipelined\n");
-  compareArrays(hostResults.data(), static_cast<float*>(C0_buffer.getHostPtr()), C0_buffer.getNumElems());
   
+  cta = dim3(128,1,1);
+  grid = dim3(M/64, N/64, 1);
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_pipelined_64x64_TN, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom Pipelined GPU kernel (new) execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();
 
   using ElementOutput = float;
   using ElementAccumulator = float;
 
   using Gemm = cutlass::gemm::device::Gemm<
       cutlass::half_t, 
-      cutlass::layout::ColumnMajor, 
-      cutlass::half_t,
       cutlass::layout::RowMajor, 
+      cutlass::half_t,
+      cutlass::layout::ColumnMajor, 
       float, 
       cutlass::layout::RowMajor,
       float, 
@@ -158,12 +153,6 @@ int main(int argc, char* argv[]) {
   printf("Finished CUTLASS GEMM\n");
   C1_buffer.copyToHost();
 
-
-  printf("Finished running kernels, checking results...\n");
-  printf("Comparing CPU and CUTLASS\n");
-  compareArrays(hostResults.data(), static_cast<float*>(C1_buffer.getHostPtr()), C1_buffer.getNumElems());
-
-  std::cout << "CPU time(ms): " << std::fixed << std::setprecision(2) << std::chrono::duration<double, std::milli>(t_end - t_start).count() << '\n';
   printf("CUTLASS kernel execution time(ms): %f\n", cutlass_milliseconds);
 
   return 0;

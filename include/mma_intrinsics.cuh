@@ -94,7 +94,7 @@ __device__ void mma_m16n8k16_s8_s8_smem_row_col(int8_t *A, int8_t *B, int32_t *C
 // f16 * f16 -> f32
 // All inputs and outputs are supposed to be in shared memory
 // A is row major in shared memory, and B is column major in shared memory
-__device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16) {
+__device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16, int ldmC=16) {
   // For A, we do x4 8x8 ldmatrix, so the first 32 threads provide row addresses
   int laneID = threadIdx.x & 31;
   __half *a = laneID >= 16 ? A + (laneID%16)*ldmA + 8 : A + laneID * ldmA;
@@ -110,14 +110,20 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col(__half *A, __half *B, float *C
 
   int groupID = laneID >> 2;
   int threadID_in_group = laneID % 4;
+  /* Rows and column of C are calculated using this formula taken from the PTX documentation
 
-  mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*8+threadID_in_group*2], C[groupID*8+threadID_in_group*2 + 1],
-                                       C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1],
+    row =      groupID                               for ci where i <  2
+         groupID + 8                             for ci where i >= 2
+    col =  (threadID_in_group * 2) + (i & 0x1)        for ci where i = {0,..,3}
+  
+  */
+  mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*ldmC+threadID_in_group*2], C[groupID*ldmC+threadID_in_group*2 + 1],
+                                       C[(groupID+8)*ldmC+threadID_in_group*2], C[(groupID+8)*ldmC+threadID_in_group*2 + 1],
                                        dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
 }
 
 // A is col major in shared memory, and B is row major in shared memory
-__device__ void mma_m16n8k16_f16_f16_smem_col_row(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16) {
+__device__ void mma_m16n8k16_f16_f16_smem_col_row(__half *A, __half *B, float *C, int ldmA=16, int ldmB=16, int ldmC=16) {
   // For A, we do x4 8x8 ldmatrix, so the first 32 threads provide row addresses
   int laneID = threadIdx.x & 31;
   __half *a = laneID >= 16 ? A + (laneID%16)*ldmA + 8 : A + laneID * ldmA;
@@ -135,8 +141,8 @@ __device__ void mma_m16n8k16_f16_f16_smem_col_row(__half *A, __half *B, float *C
   int groupID = laneID >> 2;
   int threadID_in_group = laneID % 4;
 
-  mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*8+threadID_in_group*2], C[groupID*8+threadID_in_group*2 + 1],
-                                       C[(groupID+8)*8+threadID_in_group*2], C[(groupID+8)*8+threadID_in_group*2 + 1],
+  mma_m16n8k16_row_col_f32_f16_f16_f32(C[groupID*ldmC+threadID_in_group*2], C[groupID*ldmC+threadID_in_group*2 + 1],
+                                       C[(groupID+8)*ldmC+threadID_in_group*2], C[(groupID+8)*ldmC+threadID_in_group*2 + 1],
                                        dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
 }
 
