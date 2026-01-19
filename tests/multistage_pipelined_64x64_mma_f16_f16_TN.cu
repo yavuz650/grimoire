@@ -40,7 +40,6 @@ int main(int argc, char* argv[]) {
     float val = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     A[i] = __float2half(val);
   }
-
   for (int i = 0; i < K * N; ++i) {
     float val = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     B[i] = __float2half(val);
@@ -53,7 +52,7 @@ int main(int argc, char* argv[]) {
   dim3 grid;
   cta = dim3(128,1,1);
   grid = dim3(M/64,N/64,1);
-  mma_m16n8k16_f16_f16_multistage_64x64_TN<4><<<grid, cta>>> (static_cast<__half*>(A_buffer.getDevicePtr()), 
+  mma_m16n8k16_f16_f16_multistage_64x64_TN<2><<<grid, cta>>> (static_cast<__half*>(A_buffer.getDevicePtr()), 
                                                           static_cast<__half*>(B_buffer.getDevicePtr()), 
                                                           static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   
