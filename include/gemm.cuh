@@ -619,9 +619,9 @@ __global__ void mma_m16n8k16_f16_f16_pipelined_64x64_TN(__half *A, __half *B, fl
   int localWarpIdx = threadIdx.x / 32;
 
   // Assuming 4 warps in each CTA
-  __shared__ __align__(16) __half smemA[64*64 *stagesCount];
-  __shared__ __align__(16) __half smemB[64*64 *stagesCount];
-  __shared__ __align__(16) float smemC[64*64];
+  __shared__ __align__(128) __half smemA[64*64 *stagesCount];
+  __shared__ __align__(128) __half smemB[64*64 *stagesCount];
+  __shared__ __align__(128) float smemC[64*64];
 
   for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
     smemC[i] = 0.0f;
@@ -731,5 +731,93 @@ __global__ void mma_m16n8k16_f16_f16_pipelined_64x64_TN(__half *A, __half *B, fl
   }
 }
 
+// A is row, B is col, each CTA calculates 64x64 output tile
+// Grid shape should be dim3(M/64, N/64, 1) i.e. 2D
+template<size_t StagesCount>
+__global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN(__half *A, __half *B, float *C, int M, int N, int K) {
+  using namespace nvcuda;
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+
+  // Two batches must fit in shared memory:
+  size_t sharedOffset[StagesCount];
+  for (int s = 0; s < StagesCount; ++s) 
+    sharedOffset[s] = s * 64*64;
+
+  // Allocate shared storage for a two-stage cuda::pipeline:
+  __shared__ cuda::pipeline_shared_state<
+      cuda::thread_scope::thread_scope_block,
+      StagesCount
+  > sharedState;
+  auto pipeline = cuda::make_pipeline(block, &sharedState);
+
+  int blockRow = block.group_index().y;
+  int blockCol = block.group_index().x;
+  // Warp index within the CTA
+  int localWarpIdx = threadIdx.x / 32;
+
+  // Assuming 4 warps in each CTA
+  __shared__ __align__(128) __half smemA[64*64 *StagesCount];
+  __shared__ __align__(128) __half smemB[64*64 *StagesCount];
+  __shared__ __align__(128) float smemC[64*64];
+
+  for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
+    smemC[i] = 0.0f;
+  }
+  block.sync();
+
+  int row, col;
+  // Pipelined copy/compute:
+  for (int computeBatch = 0, fetchBatch = 0; computeBatch < K/64; computeBatch++) {
+    for (; fetchBatch < K/64 && fetchBatch < (computeBatch + StagesCount); fetchBatch++) {
+      pipeline.producer_acquire();
+      for (int i = 0; i < 64; i++) {
+        row = blockRow*64+i;
+        col = fetchBatch*64;
+        cuda::memcpy_async(block, smemA+sharedOffset[fetchBatch%StagesCount] + i*64, A+row*K+col, sizeof(__half) * 64, pipeline);
+        row = fetchBatch*64;
+        col = blockCol*64+i;
+        cuda::memcpy_async(block, smemB+sharedOffset[fetchBatch%StagesCount] + i*64, B+row+col*K, sizeof(__half) * 64, pipeline);
+      }
+      pipeline.producer_commit();
+    }
+
+    pipeline.consumer_wait();
+    // Each warp does 32 MMAs. 4 for each sub-tile, and 8 sub-tiles per warp
+    for (int i = 0; i < 8; i++) {
+      int subtileRow = (localWarpIdx/2)*2 + i/4;
+      int subtileCol = (localWarpIdx%2)*4 + i%4;
+      row = subtileRow*16;
+      col = subtileCol*8;
+      // Computation overlapped with the memcpy_async of the "copy" stage:
+      mma_m16n8k16_f16_f16_smem_row_col(smemA+sharedOffset[computeBatch%StagesCount] + row*64,
+                                        smemB+sharedOffset[computeBatch%StagesCount] + col*64,
+                                        smemC+row*64+col, 64, 64, 64);
+
+      mma_m16n8k16_f16_f16_smem_row_col(smemA+sharedOffset[computeBatch%StagesCount] + row*64+16,
+                                        smemB+sharedOffset[computeBatch%StagesCount] + col*64+16,
+                                        smemC+row*64+col, 64, 64, 64);
+
+      mma_m16n8k16_f16_f16_smem_row_col(smemA+sharedOffset[computeBatch%StagesCount] + row*64+32,
+                                        smemB+sharedOffset[computeBatch%StagesCount] + col*64+32,
+                                        smemC+row*64+col, 64, 64, 64);
+
+      mma_m16n8k16_f16_f16_smem_row_col(smemA+sharedOffset[computeBatch%StagesCount] + row*64+48,
+                                        smemB+sharedOffset[computeBatch%StagesCount] + col*64+48,
+                                        smemC+row*64+col, 64, 64, 64);
+    }
+    // Collectively release the stage resources
+    pipeline.consumer_release();
+  }
+
+  block.sync();
+  for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
+    int r = i / 64;
+    int c = i % 64;
+    row = blockRow * 64 + r;
+    col = blockCol * 64 + c;
+    C[row * N + col] = smemC[r * 64 + c];
+  }
+}
 
 #endif
