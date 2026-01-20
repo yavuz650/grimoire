@@ -146,4 +146,65 @@ __device__ void mma_m16n8k16_f16_f16_smem_col_row(__half *A, __half *B, float *C
                                        dstA[0], dstA[1], dstA[2], dstA[3], dstB[0], dstB[1]);
 }
 
+// Use inline PTX mma instructions to do matrix multiplication
+// f16 * f16 -> f32
+// All inputs and outputs are supposed to be in shared memory
+// A is 64x64 row major in shared memory, and B 64x64 is column major in shared memory
+// Assumes 4 warps linearly laid out per CTA
+__device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64(__half *A, __half *B, float *C) {
+  int warpID = threadIdx.x / 32;
+  int laneID = threadIdx.x & 31;
+
+  // Load 8 tiles of A
+  uint32_t dstA[32];
+  __half *a = laneID >= 16 ? A + (laneID%16)*64 + 8 : A + laneID * 64;
+  // Warps 0 and 1 load rows 0 to 31
+  // Warps 2 and 3 load rows 32 to 63
+  a = warpID & 2 ? a + 32*64 : a;
+  size_t offset = 0;
+  uint32_t cvt_a;
+  for (int i = 0; i < 32; i+=4) {
+    offset = (i/16) * 16*64 + ((i/4)%4) * 16;
+    cvt_a = static_cast<uint32_t>(__cvta_generic_to_shared(a+offset));
+    // For A, we do x4 8x8 ldmatrix, so the 32 threads provide row addresses
+    ldmatrix_x4_m8n8_b16(dstA[i], dstA[i+1], dstA[i+2], dstA[i+3], cvt_a);
+  }
+
+  // For B, we do x2 8x8 ldmatrix
+  uint32_t dstB[32];
+  __half *b = laneID >= 8 ? B + (laneID%8)*64 + 8 : B + laneID * 64;
+  b = warpID & 1 ? b + 32*64 : b;
+  uint32_t cvt_b;
+  for (int i = 0; i < 32; i+=2) {
+    offset = (i/8) * 8*64 + ((i/2)%4) * 16;
+    cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(b+offset));
+    ldmatrix_x2_m8n8_b16(dstB[i], dstB[i+1], cvt_b);
+  }
+  
+  // Now do MMAs, 32 in total (4*8)
+  for (int i = 0; i < 8; i++) {
+    int subtileRow = (warpID/2)*2 + i/4;
+    int subtileCol = (warpID%2)*4 + i%4;
+    int row = subtileRow*16;
+    int col = subtileCol*8;
+    int groupID = laneID >> 2;
+    int threadID_in_group = laneID % 4;
+    /* Rows and column of C are calculated using this formula taken from the PTX documentation
+
+      row =      groupID                               for ci where i <  2
+          groupID + 8                             for ci where i >= 2
+      col =  (threadID_in_group * 2) + (i & 0x1)        for ci where i = {0,..,3}
+    
+    */
+    int offsetA = (i/4)*16;
+    int offsetB = (i%4)*8;
+    for (int j = 0, k = 0; j < 16; j+=4, k+=2) {
+      mma_m16n8k16_row_col_f32_f16_f16_f32(C[row*64+col+groupID*64+threadID_in_group*2], C[row*64+col+groupID*64+threadID_in_group*2 + 1],
+                                           C[row*64+col+(groupID+8)*64+threadID_in_group*2], C[row*64+col+(groupID+8)*64+threadID_in_group*2 + 1],
+                                           dstA[offsetA+j], dstA[offsetA+j+1], dstA[offsetA+j+2], dstA[offsetA+j+3], dstB[offsetB+k], dstB[offsetB+k+1]);
+    }
+  }
+}
+
+
 #endif /* __MMA_INTRINSICS_CUH__ */
