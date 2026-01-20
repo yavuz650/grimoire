@@ -19,6 +19,9 @@ all: $(TARGET)
 $(TARGET): $(SRC) include/gemm.cuh
 	$(NVCC) $< $(NVCC_FLAGS) $(OPT_FLAGS) -o $@ 
 
+device_query: device_query.cu
+	nvcc -std=c++17 device_query.cu -o device_query
+
 # Clean up generated files
 clean:
 	rm -f $(TARGET)
