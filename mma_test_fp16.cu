@@ -22,9 +22,9 @@ int main(int argc, char* argv[]) {
   // int L = std::stoi(argv[1]);
 
   // Define the problem size
-  int M = 64;
-  int N = 64;
-  int K = 64;
+  int M = 2048;
+  int N = 2048;
+  int K = 2048;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -65,37 +65,22 @@ int main(int argc, char* argv[]) {
   printf("Launching MMA GPU kernel...\n");
   cta = dim3(256,1,1);
   grid = dim3((M/16*N/8)/8,1,1);
-  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
   printf("Custom GPU kernel Row/Col execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost();
-  
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::RowMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom GPU kernel Row/Row execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
-
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::ColMajor, Layout::RowMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom GPU kernel Col/Row execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
-
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::ColMajor, Layout::ColMajor>, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom GPU kernel Col/Col execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
-
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_pipelined_NT, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom Pipelined GPU kernel (old) execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
-  
+    
   cta = dim3(128,1,1);
   grid = dim3(M/64, N/64, 1);
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_pipelined_64x64_TN, grid, cta, 2, 5, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
-  printf("Custom Pipelined GPU kernel (new) execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
+  printf("Custom Pipelined better memcpy GPU kernel 64x64 2-stage execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();  
+
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  printf("Finished MMA kernel...\n");
+  printf("Custom Pipelined better memcpy GPU kernel ldoptimized 64x64 2-stage execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost();  
 
   using ElementOutput = float;
   using ElementAccumulator = float;
@@ -115,7 +100,7 @@ int main(int argc, char* argv[]) {
       cutlass::epilogue::thread::LinearCombination<
           ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
           ElementAccumulator, ElementAccumulator>,
-      cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 10>;
+      cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>;
 
   Gemm gemm_op;
   cutlass::Status status;
