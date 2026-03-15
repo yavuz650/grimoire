@@ -1,8 +1,8 @@
 #!/bin/sh
 
-./simple_mma_f16_f16_TN
-./simple_mma_f16_f16_TT
-./simple_mma_f16_f16_NT
-./simple_mma_f16_f16_NN
-./pipelined_mma_f16_f16_NT
-./pipelined_64x64_mma_f16_f16_TN
+./mma_m16n8k16_f16_f16_TT
+./mma_m16n8k16_f16_f16_TN
+./mma_m16n8k16_f16_f16_NT
+./mma_m16n8k16_f16_f16_NN
+./mma_m16n8k16_f16_f16_multistage_64x64_TN
+./mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized
