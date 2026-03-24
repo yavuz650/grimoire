@@ -393,7 +393,7 @@ __global__ void mma_m16n8k16_f16_f16(__half *A, __half *B, float *C, int M, int 
 }
 
 // A is row, B is col, each CTA calculates 64x64 output tile
-// Grid shape should be dim3(M/64, N/64, 1) i.e. 2D
+// Grid shape should be dim3(N/64, M/64, 1) i.e. 2D
 template<size_t StagesCount>
 __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN(__half *A, __half *B, float *C, int M, int N, int K) {
   using namespace nvcuda;
@@ -417,9 +417,11 @@ __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN(__half *A, __half *B, f
   int localWarpIdx = threadIdx.x / 32;
 
   // Assuming 4 warps in each CTA
-  __shared__ __align__(128) __half smemA[64*64 *StagesCount];
-  __shared__ __align__(128) __half smemB[64*64 *StagesCount];
-  __shared__ __align__(128) float smemC[64*64];
+  extern __shared__ __align__(128) int8_t smem[];
+
+  __half* smemA = (__half*)(smem);
+  __half* smemB = (__half*)(smem + 64*64*StagesCount * sizeof(__half));
+  float*  smemC = (float*) (smem + 64*64*StagesCount * sizeof(__half) * 2);
 
   for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
     smemC[i] = 0.0f;
@@ -487,7 +489,7 @@ __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN(__half *A, __half *B, f
 }
 
 // A is row, B is col, each CTA calculates 64x64 output tile
-// Grid shape should be dim3(M/64, N/64, 1) i.e. 2D
+// Grid shape should be dim3(N/64, M/64, 1) i.e. 2D
 template<size_t StagesCount>
 __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized(__half *A, __half *B, float *C, int M, int N, int K) {
   using namespace nvcuda;
@@ -511,9 +513,11 @@ __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized(__half *A, 
   int localWarpIdx = threadIdx.x / 32;
 
   // Assuming 4 warps in each CTA
-  __shared__ __align__(128) __half smemA[64*64 *StagesCount];
-  __shared__ __align__(128) __half smemB[64*64 *StagesCount];
-  __shared__ __align__(128) float smemC[64*64];
+  extern __shared__ __align__(128) int8_t smem[];
+
+  __half* smemA = (__half*)(smem);
+  __half* smemB = (__half*)(smem + 64*64*StagesCount * sizeof(__half));
+  float*  smemC = (float*) (smem + 64*64*StagesCount * sizeof(__half) * 2);
 
   for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
     smemC[i] = 0.0f;

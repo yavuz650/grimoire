@@ -18,8 +18,8 @@
 int main(int argc, char* argv[]) {
 
   int M = 512;
-  int N = 512;
-  int K = 512;
+  int N = 64;
+  int K = 128;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -51,8 +51,10 @@ int main(int argc, char* argv[]) {
   dim3 cta;
   dim3 grid;
   cta = dim3(128,1,1);
-  grid = dim3(M/64,N/64,1);
-  mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2><<<grid, cta>>> (static_cast<__half*>(A_buffer.getDevicePtr()), 
+  grid = dim3(N/64,M/64,1);
+  int smemBytes = 65536;
+  cudaFuncSetAttribute(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
+  mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2><<<grid, cta, smemBytes>>> (static_cast<__half*>(A_buffer.getDevicePtr()), 
                                                           static_cast<__half*>(B_buffer.getDevicePtr()), 
                                                           static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   
@@ -89,8 +91,8 @@ int main(int argc, char* argv[]) {
   float* ptrC = static_cast<float*>(C1_buffer.getDevicePtr());
   float* ptrD = static_cast<float*>(C1_buffer.getDevicePtr());
 
-  int lda = M;
-  int ldb = N;
+  int lda = K;
+  int ldb = K;
   int ldc = N;
   int ldd = N;
   // Launch GEMM on the device
