@@ -1,40 +1,8 @@
-//#include "gemm.cuh"
-//#include "mma_intrinsics.cuh"
-#ifndef __GEMM_CUH__
-#define __GEMM_CUH__
+#ifndef __SM86_GEMM_CUH__
+#define __SM86_GEMM_CUH__
 
-#include <cuda.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
-#include <cuda/pipeline>
-#include <cuda/barrier>
-#include <mma.h>
-#include <cstdio>
-#include <cuda_fp16.h>
-// Disables `cuda::barrier` initialization warning.
-#pragma nv_diag_suppress static_var_with_dynamic_init
-
+#include "common.cuh"
 #include "mma_intrinsics.cuh"
-enum class Layout {
-  RowMajor,
-  ColMajor
-};
-
-template <Layout L>
-__device__ __forceinline__
-int getIdx(int r, int c, int ld) {
-  if constexpr (L == Layout::RowMajor)
-    return r * ld + c;
-  else
-    return c * ld + r;
-}
-
-inline int idx_row_major(int r, int c, int ld) {
-    return r * ld + c;
-}
-inline int idx_col_major(int r, int c, int ld) {
-    return c * ld + r;
-}
 
 template <typename T, typename ACC>
 void gemm_cpu(T *A, T *B, ACC *C, int M, int N, int K, bool isARowMajor, bool isBRowMajor) {
