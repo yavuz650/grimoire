@@ -6,7 +6,7 @@
 #include <cuda_fp16.h>
 
 //#include "warp_specialized_vector_add.cuh"
-#include "include/gemm.cuh"
+#include "include/sm86_gemm.cuh"
 #include "include/buffer.cuh"
 #include "include/utils.hpp"
 

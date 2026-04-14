@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
 
   uint64_t M = 256;
   uint64_t N = 1024;
-  uint64_t K = 512;
+  uint64_t K = 64;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -147,8 +147,8 @@ int main(int argc, char* argv[]) {
   cta = dim3(128,1,1);
   grid = dim3(N/64,M/64,1);
   int smemBytes = 65536;
-  cudaFuncSetAttribute(mma_f16_f16_tma, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
-  mma_f16_f16_tma<<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC, K);
+  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
+  mma_f16_f16_tma<2><<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC, K);
   
   CHECK_CUDA_ERROR(cudaGetLastError());
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());

@@ -98,6 +98,8 @@ float launchAndTimeKernel(
     Kernel kernel,
     dim3 gridDim,
     dim3 blockDim,
+    bool isDynamicSmem=false,
+    int smemBytes=65536,
     int warmupIters=2,
     int timedIters=5,
     Args&&... args)
@@ -110,7 +112,10 @@ float launchAndTimeKernel(
   // Warm-up
   // --------------------
   for (int i = 0; i < warmupIters; ++i) {
-    kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    if(!isDynamicSmem)
+      kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    else
+      kernel<<<gridDim, blockDim, smemBytes>>>(std::forward<Args>(args)...);
   }
   CHECK_CUDA_ERROR(cudaGetLastError());
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -120,7 +125,10 @@ float launchAndTimeKernel(
   // --------------------
   CHECK_CUDA_ERROR(cudaEventRecord(start));
   for (int i = 0; i < timedIters; ++i) {
-    kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    if(!isDynamicSmem)
+      kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    else
+      kernel<<<gridDim, blockDim, smemBytes>>>(std::forward<Args>(args)...);
   }
   CHECK_CUDA_ERROR(cudaEventRecord(stop));
 

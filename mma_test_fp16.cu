@@ -5,7 +5,8 @@
 #include <vector>
 #include <cuda_fp16.h>
 
-#include "include/gemm.cuh"
+#include "include/sm86_gemm.cuh"
+#include "include/sm120_tma_gemm.cuh"
 #include "include/buffer.cuh"
 #include "include/utils.hpp"
 
@@ -22,9 +23,9 @@ int main(int argc, char* argv[]) {
   // int L = std::stoi(argv[1]);
 
   // Define the problem size
-  int M = 2048;
-  int N = 2048;
-  int K = 2048;
+  uint64_t M = 2048;
+  uint64_t N = 2048;
+  uint64_t K = 2048;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -65,22 +66,124 @@ int main(int argc, char* argv[]) {
   printf("Launching MMA GPU kernel...\n");
   cta = dim3(256,1,1);
   grid = dim3((M/16*N/8)/8,1,1);
-  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  int smemBytes = 65536;
+  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, false, 65536, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
   printf("Custom GPU kernel Row/Col execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost();
     
   cta = dim3(128,1,1);
   grid = dim3(M/64, N/64, 1);
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  cudaFuncSetAttribute(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, grid, cta, true, smemBytes, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
   printf("Custom Pipelined better memcpy GPU kernel 64x64 2-stage execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost();  
 
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, grid, cta, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
+  cudaFuncSetAttribute(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, grid, cta, true, smemBytes, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
   printf("Finished MMA kernel...\n");
   printf("Custom Pipelined better memcpy GPU kernel ldoptimized 64x64 2-stage execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();  
+  C0_buffer.copyToHost(); 
+
+  // Setup the tensor map for TMA
+  CUtensorMap tensorMapA{};
+  CUtensorMap tensorMapB{};
+  CUtensorMap tensorMapC{};
+  // rank is the number of dimensions of the array.
+  constexpr uint32_t rank = 2;
+  std::array<uint64_t, rank> size = {K, M};
+  // The stride is the number of bytes to traverse from the first element of one row to the next.
+  // It must be a multiple of 16.
+  std::array<uint64_t, rank-1> stride = {K * sizeof(__half)};
+  // The box_size is the size of the shared memory buffer that is used as the
+  // destination of a TMA transfer.
+  std::array<uint32_t, rank> box_size = {64, 64};
+  // The distance between elements in units of sizeof(element). A stride of 2
+  // can be used to load only the real component of a complex-valued tensor, for instance.
+  std::array<uint32_t, rank> elem_stride = {1, 1};
+
+  // Create the tensor descriptor.
+  CUresult res = cuTensorMapEncodeTiled(
+    &tensorMapA,                // CUtensorMap *tensorMap,
+    CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    rank,                       // cuuint32_t tensorRank,
+    static_cast<void*>(A_buffer.getDevicePtr()),  // void *globalAddress,
+    size.data(),                       // const cuuint64_t *globalDim,
+    stride.data(),                     // const cuuint64_t *globalStrides,
+    box_size.data(),                   // const cuuint32_t *boxDim,
+    elem_stride.data(),                // const cuuint32_t *elementStrides,
+    // Interleave patterns can be used to accelerate loading of values that
+    // are less than 4 bytes long.
+    CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
+    // Swizzling can be used to avoid shared memory bank conflicts.
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    // L2 Promotion can be used to widen the effect of a cache-policy to a wider
+    // set of L2 cache lines.
+    CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    // Any element that is outside of bounds will be set to zero by the TMA transfer.
+    CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
+
+  // Tensor map for B
+  size = {K, N};
+  // The stride is the number of bytes to traverse from the first element of one row to the next.
+  // It must be a multiple of 16.
+  stride = {K * sizeof(__half)};
+  // Create the tensor descriptor.
+  res = cuTensorMapEncodeTiled(
+    &tensorMapB,                // CUtensorMap *tensorMap,
+    CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    rank,                       // cuuint32_t tensorRank,
+    static_cast<void*>(B_buffer.getDevicePtr()),  // void *globalAddress,
+    size.data(),                       // const cuuint64_t *globalDim,
+    stride.data(),                     // const cuuint64_t *globalStrides,
+    box_size.data(),                   // const cuuint32_t *boxDim,
+    elem_stride.data(),                // const cuuint32_t *elementStrides,
+    // Interleave patterns can be used to accelerate loading of values that
+    // are less than 4 bytes long.
+    CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
+    // Swizzling can be used to avoid shared memory bank conflicts.
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    // L2 Promotion can be used to widen the effect of a cache-policy to a wider
+    // set of L2 cache lines.
+    CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    // Any element that is outside of bounds will be set to zero by the TMA transfer.
+    CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
+
+  // Tensor map for C
+  size = {N, M};
+  // The stride is the number of bytes to traverse from the first element of one row to the next.
+  // It must be a multiple of 16.
+  stride = {N * sizeof(float)};
+  // Create the tensor descriptor.
+  res = cuTensorMapEncodeTiled(
+    &tensorMapC,                // CUtensorMap *tensorMap,
+    CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
+    rank,                       // cuuint32_t tensorRank,
+    static_cast<void*>(C0_buffer.getDevicePtr()),  // void *globalAddress,
+    size.data(),                       // const cuuint64_t *globalDim,
+    stride.data(),                     // const cuuint64_t *globalStrides,
+    box_size.data(),                   // const cuuint32_t *boxDim,
+    elem_stride.data(),                // const cuuint32_t *elementStrides,
+    // Interleave patterns can be used to accelerate loading of values that
+    // are less than 4 bytes long.
+    CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
+    // Swizzling can be used to avoid shared memory bank conflicts.
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    // L2 Promotion can be used to widen the effect of a cache-policy to a wider
+    // set of L2 cache lines.
+    CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    // Any element that is outside of bounds will be set to zero by the TMA transfer.
+    CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
+
+  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC, K);
+  printf("Finished MMA TMA kernel...\n");
+  printf("Custom MMA TMA SM120 GPU kernel execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost(); 
 
   using ElementOutput = float;
   using ElementAccumulator = float;
