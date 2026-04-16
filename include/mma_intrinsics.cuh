@@ -238,13 +238,17 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
 
   // For B, we do x2 8x8 ldmatrix
   uint32_t dstB[32];
-  __half *b = laneID >= 8 ? B + (laneID%8)*64 + 8 : B + laneID * 64;
-  b = warpID & 1 ? b + 32*64 : b;
+  chunkRowStart = laneID/8;
+  chunkColumnStart = laneID%8;
+  // Warps 0 and 2 load cols 0 to 31
+  // Warps 1 and 3 load cols 32 to 63
+  chunkColumnStart = warpID & 1 ? chunkColumnStart+32 : chunkColumnStart;
   uint32_t cvt_b;
-  for (int i = 0; i < 32; i+=2) {
-    offset = (i/8) * 8*64 + ((i/2)%4) * 16;
-    cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(b+offset));
-    ldmatrix_x2_m8n8_b16(dstB[i], dstB[i+1], cvt_b);
+  for (int i = 0; i < 16; i++) {
+    int chunkRow = chunkRowStart + (i%4)*2;
+    int chunkCol = chunkColumnStart + (i/4)*8;
+    cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(B+chunkRow*8+chunkCol*64));
+    ldmatrix_x2_m8n8_b16(dstB[2*i], dstB[2*i+1], cvt_b);
   }
   
   // Now do MMAs, 32 in total (4*8)
