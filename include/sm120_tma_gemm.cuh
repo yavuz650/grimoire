@@ -10,7 +10,7 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
                                 const __grid_constant__ CUtensorMap tensorMapC, uint64_t K) {
   // The destination shared memory buffer of a bulk tensor operation should be 128 byte aligned.
   // Assuming 4 warps in each CTA
-  extern __shared__ __align__(128) int8_t smem[];
+  extern __shared__ __align__(1024) int8_t smem[];
   __half* smemA = (__half*)(smem);
   __half* smemB = (__half*)(smem + 64*64*StagesCount * sizeof(__half));
   float*  smemC = (float*) (smem + 64*64*StagesCount * sizeof(__half) * 2);
@@ -64,7 +64,7 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
     bar[computeBatch%StagesCount].wait(std::move(token[computeBatch%StagesCount]));
     // pipeline.consumer_wait();
     // Computation overlapped with the memcpy_async of the "copy" stage:
-    mma_m16n8k16_f16_f16_smem_row_col_64x64(smemA+sharedOffset[computeBatch%StagesCount],
+    mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(smemA+sharedOffset[computeBatch%StagesCount],
                                             smemB+sharedOffset[computeBatch%StagesCount],
                                             smemC);
     // Collectively release the stage resources

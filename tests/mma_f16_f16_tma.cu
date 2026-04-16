@@ -17,10 +17,24 @@
 
 int main(int argc, char* argv[]) {
 
-  uint64_t M = 256;
-  uint64_t N = 1024;
-  uint64_t K = 64;
+  if (argc != 4) {
+    fprintf(stderr, "Usage: %s M N K\n", argv[0]);
+    return 1;
+  }
 
+  uint64_t M, N, K;
+  try {
+    M = std::stoull(argv[1]);
+    N = std::stoull(argv[2]);
+    K = std::stoull(argv[3]);
+  } catch (const std::invalid_argument&) {
+    fprintf(stderr, "Error: M, N, K must be integers\n");
+    return 1;
+  } catch (const std::out_of_range&) {
+    fprintf(stderr, "Error: M, N, K value out of range\n");
+    return 1;
+  }
+  
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
   // Allocate memory for matrices on the host
@@ -79,7 +93,7 @@ int main(int argc, char* argv[]) {
     // are less than 4 bytes long.
     CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
     // Swizzling can be used to avoid shared memory bank conflicts.
-    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B,
     // L2 Promotion can be used to widen the effect of a cache-policy to a wider
     // set of L2 cache lines.
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
