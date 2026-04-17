@@ -253,6 +253,7 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
     ldmatrix_x2_m8n8_b16(dstB[2*i], dstB[2*i+1], cvt_b);
   }
   
+  float dstC[4];
   // Now do MMAs, 32 in total (4*8)
   for (int i = 0; i < 8; i++) {
     int subtileRow = (warpID/2)*2 + i/4;
@@ -261,6 +262,8 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
     int col = subtileCol*8;
     int groupID = laneID >> 2;
     int threadID_in_group = laneID % 4;
+    row += groupID;
+    col += threadID_in_group*2;
     /* Rows and column of C are calculated using this formula taken from the PTX documentation
 
       row =      groupID                               for ci where i <  2
@@ -270,11 +273,21 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
     */
     int offsetA = (i/4)*16;
     int offsetB = (i%4)*8;
+    dstC[0] = 0;
+    dstC[1] = 0;
+    dstC[2] = 0;
+    dstC[3] = 0;
     for (int j = 0, k = 0; j < 16; j+=4, k+=2) {
-      mma_m16n8k16_row_col_f32_f16_f16_f32(C[row*64+col+groupID*64+threadID_in_group*2], C[row*64+col+groupID*64+threadID_in_group*2 + 1],
-                                           C[row*64+col+(groupID+8)*64+threadID_in_group*2], C[row*64+col+(groupID+8)*64+threadID_in_group*2 + 1],
-                                           dstA[offsetA+j], dstA[offsetA+j+1], dstA[offsetA+j+2], dstA[offsetA+j+3], dstB[offsetB+k], dstB[offsetB+k+1]);
+      // Accumulate to dstC registers
+      mma_m16n8k16_row_col_f32_f16_f16_f32(dstC[0], dstC[1], dstC[2], dstC[3],
+                                           dstA[offsetA+j], dstA[offsetA+j+1], dstA[offsetA+j+2], dstA[offsetA+j+3], 
+                                           dstB[offsetB+k], dstB[offsetB+k+1]);
     }
+    // Store dstC registers to shared memory
+    C[row*64+col] += dstC[0];
+    C[row*64+col+1] += dstC[1];
+    C[(row+8)*64+col] += dstC[2];
+    C[(row+8)*64+col+1] += dstC[3];
   }
 }
 
