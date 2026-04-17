@@ -247,7 +247,9 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
   for (int i = 0; i < 16; i++) {
     int chunkRow = chunkRowStart + (i%4)*2;
     int chunkCol = chunkColumnStart + (i/4)*8;
-    cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(B+chunkRow*8+chunkCol*64));
+    int swizzledRow = (chunkCol%8) ^ chunkRow;
+    int swizzledCol = chunkCol;
+    cvt_b = static_cast<uint32_t>(__cvta_generic_to_shared(B+swizzledRow*8+swizzledCol*64));
     ldmatrix_x2_m8n8_b16(dstB[2*i], dstB[2*i+1], cvt_b);
   }
   

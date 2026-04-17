@@ -117,7 +117,7 @@ int main(int argc, char* argv[]) {
     // are less than 4 bytes long.
     CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
     // Swizzling can be used to avoid shared memory bank conflicts.
-    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B,
     // L2 Promotion can be used to widen the effect of a cache-policy to a wider
     // set of L2 cache lines.
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
     // are less than 4 bytes long.
     CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
     // Swizzling can be used to avoid shared memory bank conflicts.
-    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_NONE,
+    CUtensorMapSwizzle::CU_TENSOR_MAP_SWIZZLE_128B,
     // L2 Promotion can be used to widen the effect of a cache-policy to a wider
     // set of L2 cache lines.
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
