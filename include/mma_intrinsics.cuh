@@ -211,6 +211,8 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64(__half *A, __half *B, fl
 // All inputs and outputs are supposed to be in shared memory
 // A is 64x64 row major in shared memory, and B 64x64 is column major in shared memory
 // Assumes 4 warps linearly laid out per CTA
+// Split C into two halves for TMA copy. Necessary when using swizzling.
+template <bool splitC=true>
 __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __half *B, float *C) {
   int warpID = threadIdx.x / 32;
   int laneID = threadIdx.x & 31;
@@ -264,6 +266,7 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
     int threadID_in_group = laneID % 4;
     row += groupID;
     col += threadID_in_group*2;
+    int splitCOffset = warpID % 2 == 0 ? 0 : 32*64;
     /* Rows and column of C are calculated using this formula taken from the PTX documentation
 
       row =      groupID                               for ci where i <  2
@@ -284,13 +287,26 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
                                            dstB[offsetB+k], dstB[offsetB+k+1]);
     }
     // Store dstC registers to shared memory
-    C[row*64+col] += dstC[0];
-    C[row*64+col+1] += dstC[1];
-    C[(row+8)*64+col] += dstC[2];
-    C[(row+8)*64+col+1] += dstC[3];
+    auto swizzle = [](int r, int c) {
+      int chunkCol = c / 4;
+      int swizzledChunk = chunkCol ^ (r % 8);
+      return swizzledChunk * 4 + (c % 4);
+    };
+    if constexpr(splitC) {
+      int swizzledCol = swizzle(row, col)%32;
+      C[row*32     + swizzledCol + splitCOffset]    += dstC[0];
+      C[row*32     + swizzledCol+1 + splitCOffset]  += dstC[1];
+      C[(row+8)*32 + swizzledCol + splitCOffset]    += dstC[2];
+      C[(row+8)*32 + swizzledCol+1 + splitCOffset] += dstC[3];
+    }
+    else {
+      C[row*64     + col]    += dstC[0];
+      C[row*64     + col+1]  += dstC[1];
+      C[(row+8)*64 + col]    += dstC[2];
+      C[(row+8)*64 + col+1] += dstC[3];
+    }
   }
 }
-
 
 #endif /* __MMA_INTRINSICS_CUH__ */
 

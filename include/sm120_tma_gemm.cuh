@@ -76,10 +76,14 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
 
   // Initiate TMA transfer to copy shared memory to global memory
   if (threadIdx.x == 0) {
-    // int32_t tensor_coords[2] = { blockCol*64, blockRow*64 };
+    // Store left half of C
     cuda::ptx::cp_async_bulk_tensor(
-      cuda::ptx::space_global, cuda::ptx::space_shared,
-      &tensorMapC, { blockCol*64, blockRow*64 }, smemC);
+       cuda::ptx::space_global, cuda::ptx::space_shared,
+       &tensorMapC, { blockCol*64, blockRow*64 }, smemC);
+    // Store right half
+    cuda::ptx::cp_async_bulk_tensor(
+       cuda::ptx::space_global, cuda::ptx::space_shared,
+       &tensorMapC, { blockCol*64+32, blockRow*64 }, smemC + 64*32);
     // Wait for TMA transfer to have finished reading shared memory.
     // Create a "bulk async-group" out of the previous bulk copy operation.
     cuda::ptx::cp_async_bulk_commit_group();
