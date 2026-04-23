@@ -13,7 +13,16 @@
 #define CHECK_CUDA_ERROR(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line) {
   if (code != cudaSuccess) {
-    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    fprintf(stderr, "CUDA Error: %s %s %d\n", cudaGetErrorString(code), file, line);
+    abort();
+  }
+}
+
+inline void gpuAssert(CUresult code, const char *file, int line) {
+  if (code != CUDA_SUCCESS) {
+    const char *errStr;
+    cuGetErrorString(code, &errStr);
+    fprintf(stderr, "CU Error: %s %s %d\n", errStr, file, line);
     abort();
   }
 }

@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
   // Define the problem size
   uint64_t M = 2048;
   uint64_t N = 2048;
-  uint64_t K = 2048;
+  constexpr uint64_t K = 2048;
 
   printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
   printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
@@ -179,8 +179,8 @@ int main(int argc, char* argv[]) {
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
   );
 
-  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC, K);
+  cudaFuncSetAttribute(mma_f16_f16_tma<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2,K>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC);
   printf("Finished MMA TMA kernel...\n");
   printf("Custom MMA TMA SM120 GPU kernel execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost(); 

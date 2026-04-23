@@ -4,10 +4,10 @@
 #include "common.cuh"
 #include "mma_intrinsics.cuh"
 
-template<size_t StagesCount=2>
+template<size_t StagesCount=2, uint64_t K=64>
 __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA, 
                                 const __grid_constant__ CUtensorMap tensorMapB,
-                                const __grid_constant__ CUtensorMap tensorMapC, uint64_t K) {
+                                const __grid_constant__ CUtensorMap tensorMapC) {
   // The destination shared memory buffer of a bulk tensor operation should be 128 byte aligned.
   // Assuming 4 warps in each CTA
   extern __shared__ __align__(1024) int8_t smem[];
@@ -21,10 +21,6 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
   for (int i = threadIdx.x; i < 64 * 64; i += block.num_threads()) {
     smemC[i] = 0.0f;
   }
-  // Two batches must fit in shared memory:
-  size_t sharedOffset[StagesCount];
-  for (int s = 0; s < StagesCount; ++s) 
-    sharedOffset[s] = s * 64*64;
 
   // Initialize shared memory barrier with the number of threads participating in the barrier.
   __shared__ cuda::barrier<cuda::thread_scope_block> bar[2];
@@ -39,19 +35,21 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
 
   cuda::barrier<cuda::thread_scope_block>::arrival_token token[2];
   // Pipelined copy/compute
+#pragma unroll
   for (int computeBatch = 0, fetchBatch = 0; computeBatch < K/64; computeBatch++) {
+  #pragma unroll
     for (; fetchBatch < K/64 && fetchBatch < (computeBatch + StagesCount); fetchBatch++) {
       if (threadIdx.x == 0) {
         // Initiate bulk tensor copy for A.
         cuda::ptx::cp_async_bulk_tensor(
           cuda::ptx::space_shared, cuda::ptx::space_global,
-          smemA+sharedOffset[fetchBatch%StagesCount], &tensorMapA, { fetchBatch*64, blockRow*64 },
+          smemA+(fetchBatch % StagesCount)*64*64, &tensorMapA, { fetchBatch*64, blockRow*64 },
           cuda::device::barrier_native_handle(bar[fetchBatch%StagesCount]));
 
         // Initiate bulk tensor copy for B.
         cuda::ptx::cp_async_bulk_tensor(
           cuda::ptx::space_shared, cuda::ptx::space_global,
-          smemB+sharedOffset[fetchBatch%StagesCount], &tensorMapB, { fetchBatch*64, blockCol*64 },
+          smemB+(fetchBatch % StagesCount)*64*64, &tensorMapB, { fetchBatch*64, blockCol*64 },
           cuda::device::barrier_native_handle(bar[fetchBatch%StagesCount]));
         // Arrive on the barrier and tell how many bytes are expected to come in.
         token[fetchBatch%StagesCount] = cuda::device::barrier_arrive_tx(bar[fetchBatch%StagesCount], 1, 2*64*64*sizeof(__half));
@@ -64,8 +62,8 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
     bar[computeBatch%StagesCount].wait(std::move(token[computeBatch%StagesCount]));
     // pipeline.consumer_wait();
     // Computation overlapped with the memcpy_async of the "copy" stage:
-    mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(smemA+sharedOffset[computeBatch%StagesCount],
-                                            smemB+sharedOffset[computeBatch%StagesCount],
+    mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(smemA+(computeBatch % StagesCount)*64*64,
+                                            smemB+(computeBatch % StagesCount)*64*64,
                                             smemC);
     // Collectively release the stage resources
     // pipeline.consumer_release();

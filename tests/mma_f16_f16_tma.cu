@@ -17,16 +17,17 @@
 
 int main(int argc, char* argv[]) {
 
-  if (argc != 4) {
-    fprintf(stderr, "Usage: %s M N K\n", argv[0]);
+  if (argc != 3) {
+    fprintf(stderr, "Usage: %s M N\n", argv[0]);
     return 1;
   }
 
-  uint64_t M, N, K;
+  uint64_t M, N;
+  constexpr uint64_t K = 1024;
   try {
     M = std::stoull(argv[1]);
     N = std::stoull(argv[2]);
-    K = std::stoull(argv[3]);
+//    K = std::stoull(argv[3]);
   } catch (const std::invalid_argument&) {
     fprintf(stderr, "Error: M, N, K must be integers\n");
     return 1;
@@ -80,7 +81,7 @@ int main(int argc, char* argv[]) {
   std::array<uint32_t, rank> elem_stride = {1, 1};
 
   // Create the tensor descriptor.
-  CUresult res = cuTensorMapEncodeTiled(
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapA,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     rank,                       // cuuint32_t tensorRank,
@@ -99,7 +100,7 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
+  ));
 
   // Tensor map for B
   size = {K, N};
@@ -107,7 +108,7 @@ int main(int argc, char* argv[]) {
   // It must be a multiple of 16.
   stride = {K * sizeof(__half)};
   // Create the tensor descriptor.
-  res = cuTensorMapEncodeTiled(
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapB,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     rank,                       // cuuint32_t tensorRank,
@@ -126,7 +127,7 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
+  ));
 
   // Tensor map for C
   size = {N, M};
@@ -134,7 +135,7 @@ int main(int argc, char* argv[]) {
   // It must be a multiple of 16.
   stride = {N * sizeof(float)};
   // Create the tensor descriptor.
-  res = cuTensorMapEncodeTiled(
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapC,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
     rank,                       // cuuint32_t tensorRank,
@@ -153,16 +154,15 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
-
+  ));
 
   dim3 cta;
   dim3 grid;
   cta = dim3(128,1,1);
   grid = dim3(N/64,M/64,1);
   int smemBytes = 65536;
-  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
-  mma_f16_f16_tma<2><<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC, K);
+  cudaFuncSetAttribute(mma_f16_f16_tma<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
+  mma_f16_f16_tma<2,K><<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC);
   
   CHECK_CUDA_ERROR(cudaGetLastError());
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
