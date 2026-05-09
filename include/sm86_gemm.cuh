@@ -27,17 +27,17 @@ void gemm_cpu(T *A, T *B, ACC *C, int M, int N, int K, bool isARowMajor, bool is
 
 // C = A*B
 // A is MxK, B is KxN, C is MxN
-// Everything is row-major
-__global__ void simt_gemm(int8_t *A, int8_t *B, int *C, int M, int N, int K) {
+template <typename T, Layout LayoutA, Layout LayoutB>
+__global__ void simt_gemm(T *A, T *B, T *C, int M, int N, int K, T scale) {
   int r = blockDim.y*blockIdx.y+threadIdx.y;
   int c = blockDim.x*blockIdx.x+threadIdx.x;
 
-  int sum = 0;
+  T sum = 0;
   for (int i = 0; i < K; i++) {
-    sum += A[K*r+i] * B[i*N+c];
+    sum += A[getIdx<LayoutA>(r, i, (LayoutA == Layout::RowMajor ? K : M))] *
+           B[getIdx<LayoutB>(i, c, (LayoutB == Layout::RowMajor ? N : K))];
   }
-
-  C[N*r+c] = sum;
+  C[N*r+c] = sum*scale;
 }
 
 // A is row major, B is col major
