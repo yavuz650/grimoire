@@ -18,7 +18,7 @@
 // m stores the maximum value of each row of O
 // Each thread block calculates (Br,D_K) tiles of the output
 template <int32_t SEQ_LEN=1024, int32_t D_K=128>
-__global__ void fmha_fwd_64x64(float *Q, float *K, float *V,
+__global__ void fmha_fwd_128x1(float *Q, float *K, float *V,
                          float *O, float qk_scale, 
                          float *l, float *m)
 {
@@ -43,7 +43,7 @@ __global__ void fmha_fwd_64x64(float *Q, float *K, float *V,
       smemK[r*D_K + threadIdx.x] = K[j*Bc*D_K + r*D_K + threadIdx.x];
       smemV[r*D_K + threadIdx.x] = V[j*Bc*D_K + r*D_K + threadIdx.x];
     }
-    
+    __syncthreads(); 
     for(int i=0; i<Tr; i++) {
       // Load Q_i, O_i, l_i, m_i to smem
       // Let each thread load one element of a row
@@ -56,16 +56,18 @@ __global__ void fmha_fwd_64x64(float *Q, float *K, float *V,
         smeml[threadIdx.x] = l[i*Br+threadIdx.x];
         smemm[threadIdx.x] = m[i*Br+threadIdx.x];
       }
+      __syncthreads(); 
       // Calculate S = Q*K^T. Each warp calculates 8 rows. Each thread calculates one element of a row.
       float S[8];
       int wid = threadIdx.x / 32;
       int laneid = threadIdx.x % 32;
-      for(int r=wid; r < Br; r+=4) {
-        S[r] = 0;
+      for(int r=wid, idx=0; r < Br; r+=4, idx++) {
+        S[idx] = 0;
         for(int k=0; k < D_K; k++) {
-          S[r] += Q[r*D_K + k] * K[laneid * D_K + k] * qk_scale;
+          S[idx] += smemQ[r*D_K + k] * smemK[laneid * D_K + k] * qk_scale;
         } 
       }
+      __syncthreads(); 
       // Find the maximum value in each row of S
       float m_local = -INFINITY, m_global = -INFINITY;
       __shared__ float m_local_shared[Br];
@@ -79,11 +81,10 @@ __global__ void fmha_fwd_64x64(float *Q, float *K, float *V,
         // Lane 0 has the maximum value in m_local
         if(laneid == 0)
           m_local_shared[4*k+wid] = m_local;
+        __syncthreads();
         S[k] = expf(S[k] - m_local_shared[4*k+wid]);
         // Store to P in shared memory
-        for(int r=wid; r < Br; r+=4) {
-          smemP[r*Bc + laneid] = S[r/4];
-        } 
+        smemP[(4*k+wid)*Bc + laneid] = S[k]; 
         // Reduce the rows
         float val = S[k];
         for(int offset=16; offset>0; offset=offset>>1) {
@@ -92,32 +93,36 @@ __global__ void fmha_fwd_64x64(float *Q, float *K, float *V,
         if(laneid == 0)
           l_local_shared[4*k+wid] = val;
       }
+      __syncthreads(); 
       // Let the first 8 threads update the global maximums
       if(laneid < 8) {
-        m_global = fmaxf(smemm[threadIdx.x + 8*wid], m_local_shared[threadIdx.x + 8*wid]);
-        m_global_shared[threadIdx.x + 8*wid] = m_global;
-        l_local_shared[threadIdx.x + 8*wid] = smeml[threadIdx.x + 8*wid] * expf(smemm[threadIdx.x + 8*wid] - m_global) + l_local_shared[threadIdx.x + 8*wid] * expf(m_local_shared[threadIdx.x + 8*wid] - m_global);
+        m_global = fmaxf(smemm[laneid + 8*wid], m_local_shared[laneid + 8*wid]);
+        m_global_shared[laneid + 8*wid] = m_global;
+        l_local_shared[laneid + 8*wid] = smeml[laneid + 8*wid] * expf(smemm[laneid + 8*wid] - m_global) + l_local_shared[laneid + 8*wid] * expf(m_local_shared[laneid + 8*wid] - m_global);
       }
 
+      __syncthreads(); 
       // 4 warps together compute one row of O in each iteration
       float val;
       for(int r=0; r < Br; r++) {
         val = 0;
         for(int k=0; k < Bc; k++) {
-          val += smemP[r*Bc + k] * V[k * D_K + threadIdx.x];
+          val += smemP[r*Bc + k] * smemV[k * D_K + threadIdx.x];
         }
         val *= expf(m_local_shared[r] - m_global_shared[r]);
         // Update the existing value in the O matrix
         val += smemO[r*D_K+threadIdx.x] * expf(smemm[r] - m_global_shared[r]) * smeml[r];
         val /= l_local_shared[r];
-        O[(Tr*Br+r)*D_K + threadIdx.x] = val;
+        O[(i*Br+r)*D_K + threadIdx.x] = val;
       }
 
+      __syncthreads(); 
       // Let warp 0 update the l and m arrays
       if(wid == 0) {
         l[i*Br + threadIdx.x] = l_local_shared[threadIdx.x];
         m[i*Br + threadIdx.x] = m_global_shared[threadIdx.x];
       }
+      __syncthreads(); 
     }
   }
 }
