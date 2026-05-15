@@ -43,12 +43,6 @@ int main() {
               << prop.major << "." << prop.minor << "\n";
     std::cout << "SM count                  : "
               << prop.multiProcessorCount << "\n";
-
-    // Clocks
-    std::cout << "Core clock                : "
-              << prop.clockRate / 1000 << " MHz\n";
-    std::cout << "Memory clock              : "
-              << prop.memoryClockRate / 1000 << " MHz\n";
     std::cout << "Memory bus width          : "
               << prop.memoryBusWidth << " bits\n";
 

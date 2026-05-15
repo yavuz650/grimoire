@@ -1,18 +1,16 @@
-NVCC        := nvcc
-ARCH        := -arch=sm_120a
-CXXFLAGS    := -O3 -std=c++17
-INCLUDES    := -I.. -I ../cutlass/include -I ../cutlass/tools/util/include
-NVCCFLAGS   := $(CXXFLAGS) $(ARCH) $(INCLUDES) --expt-relaxed-constexpr -lcuda
+SOURCES := $(wildcard *.cu)
+TARGETS := $(patsubst %.cu, $(BUILD_DIR)/tests/%, $(SOURCES))
 
-SRCS := $(wildcard *.cu)
-BINS := $(SRCS:.cu=)
+all: $(TARGETS)
 
-all: $(BINS)
+$(BUILD_DIR)/tests/%: %.cu
+	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
-%: %.cu ../include/sm86_gemm.cuh ../include/sm120_tma_gemm.cuh
-	$(NVCC) $(NVCCFLAGS) $< -o $@
+$(BUILD_DIR)/tests/fmha_fwd: fmha_fwd.cu ../include/fmha_fwd.cuh ../include/utils.cuh ../include/buffer.cuh 
+
+# Stop make from trying to build the headers?
+../include/%.cuh: ;
 
 clean:
-	rm -f $(BINS)
+	rm -f $(TARGETS)
 
-.PHONY: all clean

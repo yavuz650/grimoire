@@ -1,32 +1,32 @@
+# Common flags
 NVCC        := nvcc
 ARCH        := -arch=sm_120a
-CXXFLAGS    := -O3 -std=c++17
-INCLUDES    := -I include -I cutlass/include -I cutlass/tools/util/include
+CXX_FLAGS    := -O3 -std=c++17
+INCLUDES    := -I$(CURDIR) -I$(CURDIR)/cutlass/include -I$(CURDIR)/cutlass/tools/util/include
 NVCC_FLAGS   := $(CXXFLAGS) $(ARCH) $(INCLUDES) --expt-relaxed-constexpr -lcuda -lineinfo -g
 # Allow the user to specify additional flags
 # Example: make OPT_FLAGS=-O2
 OPT_FLAGS ?=
-
 # Directory for build artifacts
-BUILD_DIR   ?= build
-TARGET      := $(BUILD_DIR)/mma_test_fp16
+BUILD_DIR   := $(CURDIR)/build
+export NVCC ARCH CXX_FLAGS INCLUDES NVCC_FLAGS OPT_FLAGS BUILD_DIR
 
-SRC         := mma_test_fp16.cu
+.PHONY: all benchmark tests misc clean
 
-all: $(TARGET)
+all: benchmark tests misc 
 
-$(TARGET): $(SRC) include/sm86_gemm.cuh include/sm120_tma_gemm.cuh
-	@mkdir -p $(BUILD_DIR)
-	$(NVCC) $< $(NVCC_FLAGS) $(OPT_FLAGS) -o $@ 
+benchmark:
+	mkdir -p $(BUILD_DIR)/benchmark
+	$(MAKE) -C benchmark
 
-# Misc targets
-device_query: device_query.cu
-	@mkdir -p $(BUILD_DIR)
-	$(NVCC) $< $(NVCC_FLAGS) $(OPT_FLAGS) -o $(BUILD_DIR)/$@
+tests:
+	mkdir -p $(BUILD_DIR)/tests
+	$(MAKE) -C tests
 
-test_memory_latency: test_memory_latency.cu
-	@mkdir -p $(BUILD_DIR)
-	$(NVCC) $< $(NVCC_FLAGS) $(OPT_FLAGS) -o $(BUILD_DIR)/$@
+misc:
+	mkdir -p $(BUILD_DIR)/misc
+	$(MAKE) -C misc
 
 clean:
-	rm -rf $(BUILD_DIR)/$(TARGET)
+	rm -rf $(BUILD_DIR)
+
