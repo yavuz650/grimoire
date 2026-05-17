@@ -32,8 +32,6 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
-  printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
   // Allocate memory for matrices on the host
   Buffer A_buffer(M*K,sizeof(__half));
   Buffer B_buffer(K*N,sizeof(__half));
@@ -201,7 +199,7 @@ int main(int argc, char* argv[]) {
   int ldd = N;
   // Launch GEMM on the device
   status = gemm_op({
-    {M, N, K},
+    {static_cast<int32_t>(M), static_cast<int32_t>(N), K},
     {ptrA, lda},            // TensorRef to A device tensor
     {ptrB, ldb},            // TensorRef to B device tensor
     {ptrC, ldc},            // TensorRef to C device tensor

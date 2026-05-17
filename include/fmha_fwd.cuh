@@ -24,7 +24,6 @@ __global__ void fmha_fwd_128x1(float *Q, float *K, float *V,
 {
   constexpr int32_t Br = 32;
   constexpr int32_t Bc = 32;
-  constexpr int32_t Tr = SEQ_LEN/Br;
   constexpr int32_t Tc = SEQ_LEN/Bc;
 
   extern __shared__ int8_t smem[];

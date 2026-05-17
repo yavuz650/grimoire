@@ -1,11 +1,6 @@
-#include <iostream>
-#include <chrono>
 #include <ctime>
-#include <iomanip>
-#include <vector>
 #include <cuda_fp16.h>
 
-//#include "warp_specialized_vector_add.cuh"
 #include "include/sm86_gemm.cuh"
 #include "include/buffer.cuh"
 #include "include/utils.hpp"
@@ -21,8 +16,6 @@ int main(int argc, char* argv[]) {
   int N = 64;
   int K = 128;
 
-  printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
-  printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
   // Allocate memory for matrices on the host
   Buffer A_buffer(M*K,sizeof(__half));
   Buffer B_buffer(K*N,sizeof(__half));

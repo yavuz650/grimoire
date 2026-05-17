@@ -2,8 +2,6 @@
 #define __BUFFER_CUH__
 
 #include <cuda.h>
-#include <iostream>
-#include <stdexcept>
 
 #include "utils.hpp"
 
@@ -20,7 +18,7 @@ class Buffer {
     totalBytes = numElems * elemSize;
     CHECK_CUDA_ERROR(cudaMallocHost(&h_ptr, totalBytes));
     CHECK_CUDA_ERROR(cudaMalloc(&d_ptr, totalBytes));
-    printf("Created buffer with size: %d\n", totalBytes);
+    printf("Created buffer with size: %lu\n", totalBytes);
   }
 
   ~Buffer() {

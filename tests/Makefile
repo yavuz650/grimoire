@@ -6,11 +6,11 @@ all: $(TARGETS)
 $(BUILD_DIR)/tests/%: %.cu
 	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
-$(BUILD_DIR)/tests/fmha_fwd: fmha_fwd.cu ../include/fmha_fwd.cuh ../include/utils.cuh ../include/buffer.cuh 
-$(BUILD_DIR)/tests/mma_f16_f16_tma_ws: mma_f16_f16_tma_ws.cu ../include/sm120_tma_gemm.cuh ../include/utils.cuh ../include/buffer.cuh 
+$(BUILD_DIR)/tests/fmha_fwd: fmha_fwd.cu ../include/fmha_fwd.cuh ../include/utils.hpp ../include/buffer.cuh
+	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
-# Stop make from trying to build the headers?
-../include/%.cuh: ;
+$(BUILD_DIR)/tests/mma_f16_f16_tma_ws: mma_f16_f16_tma_ws.cu ../include/sm120_tma_gemm.cuh ../include/utils.hpp ../include/buffer.cuh
+	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
 clean:
 	rm -f $(TARGETS)

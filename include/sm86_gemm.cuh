@@ -229,8 +229,6 @@ __global__ void mma_m16n8k16_s8_s8_pipelined_row_col(int8_t *A, int8_t *B, int32
   __shared__ __align__(16) int8_t smemA[m*k*2 * stagesCount];
   __shared__ __align__(16) int8_t smemB[k*n*4 * stagesCount];
   __shared__ __align__(16) int32_t smemC[m*n *8];
-  int smemAIdx = localWarpIdx*m*k;
-  int smemBIdx = localWarpIdx*k*n;
   int smemCIdx = localWarpIdx*m*n;
   int laneId = threadIdx.x & 31;
   int row, col;
@@ -477,8 +475,6 @@ __global__ void mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized(__half *A, 
 
   int blockRow = block.group_index().y;
   int blockCol = block.group_index().x;
-  // Warp index within the CTA
-  int localWarpIdx = threadIdx.x / 32;
 
   // Assuming 4 warps in each CTA
   extern __shared__ __align__(128) int8_t smem[];

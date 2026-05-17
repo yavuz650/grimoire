@@ -227,7 +227,6 @@ __device__ void mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(__half *A, __hal
   chunkRowStart = warpID >= 2 ? chunkRowStart + 32 : chunkRowStart;
   int chunkColumnStart = laneID / 16;
 
-  size_t offset = 0;
   uint32_t cvt_a;
   for (int i = 0; i < 8; i++) {
     int chunkRow = chunkRowStart + i/4 * 16;
