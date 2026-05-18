@@ -116,7 +116,6 @@ __device__ void dma_ws(cuda::barrier<cuda::thread_scope_block> *ready,
   auto block = cooperative_groups::this_thread_block();
   int blockRow = block.group_index().y;
   int blockCol = block.group_index().x;
-  cuda::barrier<cuda::thread_scope_block>::arrival_token token[2];
   for(int i=0; i<K/64; i++) {
     // wait for buffer_(i%StagesCount) to be ready to be filled
     int32_t stage = i % StagesCount;
@@ -135,10 +134,10 @@ __device__ void dma_ws(cuda::barrier<cuda::thread_scope_block> *ready,
         smemB+stage*64*64, tensorMapB, { i*64, blockCol*64 },
         cuda::device::barrier_native_handle(filled[stage]));
       // Arrive on the barrier and tell how many bytes are expected to come in.
-      token[stage] = cuda::device::barrier_arrive_tx(filled[stage], 1, 2*64*64*sizeof(__half));
-    } else {
+      auto token = cuda::device::barrier_arrive_tx(filled[stage], 1, 2*64*64*sizeof(__half));
+    } else { 
       // Other threads just arrive.
-      token[stage] = filled[stage].arrive();
+      auto token = filled[stage].arrive();
     }
   }
 }
@@ -153,6 +152,7 @@ __device__ void math_ws(cuda::barrier<cuda::thread_scope_block> *ready,
   int32_t parity[StagesCount];
   parity[0] = 0;
   parity[1] = 0;
+#pragma unroll
   for(int i=0; i<K/64; i++) {
     // wait for buffer_(i%StagesCount) to be filled by the producer
     int32_t stage = i % StagesCount;
@@ -228,3 +228,4 @@ __global__ void mma_f16_f16_tma_ws(const __grid_constant__ CUtensorMap tensorMap
 }
 
 #endif
+

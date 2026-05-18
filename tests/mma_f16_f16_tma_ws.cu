@@ -215,3 +215,4 @@ int main(int argc, char* argv[]) {
   compareArrays(static_cast<float*>(C0_buffer.getHostPtr()), static_cast<float*>(C1_buffer.getHostPtr()), C1_buffer.getNumElems());
   return 0;
 }
+

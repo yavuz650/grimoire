@@ -28,8 +28,8 @@ int main() {
   int N = 256;
   int K = 128;
 
-  float alpha = 1.25f;
-  float beta = -1.25f;
+  int alpha = 1;
+  int beta = -1;
 
   //
   // Allocate device memory

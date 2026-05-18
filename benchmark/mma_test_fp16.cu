@@ -1,11 +1,6 @@
-#include <iostream>
-#include <chrono>
 #include <ctime>
-#include <iomanip>
-#include <vector>
 #include <cuda_fp16.h>
 
-#include "include/sm86_gemm.cuh"
 #include "include/sm120_tma_gemm.cuh"
 #include "include/buffer.cuh"
 #include "include/utils.hpp"
@@ -23,12 +18,10 @@ int main(int argc, char* argv[]) {
   // int L = std::stoi(argv[1]);
 
   // Define the problem size
-  uint64_t M = 256;
-  uint64_t N = 256;
-  constexpr uint64_t K = 2048;
+  uint64_t M = 2048;
+  uint64_t N = 1024;
+  constexpr uint64_t K = 8192;
 
-  printf("Matrix A size in bytes: %d\n", M*K*sizeof(__half));
-  printf("Matrix B size in bytes: %d\n", K*N*sizeof(__half));
   // Allocate memory for matrices on the host
   Buffer A_buffer(M*K,sizeof(__half));
   Buffer B_buffer(K*N,sizeof(__half));
@@ -59,33 +52,12 @@ int main(int argc, char* argv[]) {
   dim3 cta;
   dim3 grid;
   cudaEvent_t start, stop;
-  cudaError_t err;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
+  int smemBytes;
+  float milliseconds;
 
-  printf("Launching MMA GPU kernel...\n");
-  cta = dim3(256,1,1);
-  grid = dim3((M/16*N/8)/8,1,1);
-  int smemBytes = 65536;
-  float milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16<Layout::RowMajor, Layout::ColMajor>, grid, cta, false, 65536, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom GPU kernel Row/Col execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();
-    
-  cta = dim3(128,1,1);
-  grid = dim3(M/64, N/64, 1);
-  cudaFuncSetAttribute(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN<2>, grid, cta, true, smemBytes, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom Pipelined better memcpy GPU kernel 64x64 2-stage execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost();  
-
-  cudaFuncSetAttribute(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_m16n8k16_f16_f16_multistage_64x64_TN_ldoptimized<2>, grid, cta, true, smemBytes, 2, 1, static_cast<__half*>(A_buffer.getDevicePtr()), static_cast<__half*>(B_buffer.getDevicePtr()), static_cast<float*>(C0_buffer.getDevicePtr()), M, N, K);
-  printf("Finished MMA kernel...\n");
-  printf("Custom Pipelined better memcpy GPU kernel ldoptimized 64x64 2-stage execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost(); 
-
+  printf("Launching Grimoire GPU kernels...\n");
   // Setup the tensor map for TMA
   CUtensorMap tensorMapA{};
   CUtensorMap tensorMapB{};
@@ -180,11 +152,22 @@ int main(int argc, char* argv[]) {
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
   );
-
+  
+  cta = dim3(128,1,1);
+  grid = dim3(N/64,M/64,1);
+  smemBytes = 65536;
   cudaFuncSetAttribute(mma_f16_f16_tma<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2,K>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2,K>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC);
   printf("Finished MMA TMA kernel...\n");
-  printf("Custom MMA TMA SM120 GPU kernel execution time(ms): %f\n", milliseconds);
+  printf("execution time(ms): %f\n", milliseconds);
+  C0_buffer.copyToHost(); 
+
+  cta = dim3(160,1,1);
+  grid = dim3(N/64,M/64,1);
+  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2,K>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC);
+  printf("Finished MMA TMA WS kernel...\n");
+  printf("execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost(); 
 
   using ElementOutput = float;
@@ -226,7 +209,7 @@ int main(int argc, char* argv[]) {
   printf("Launching CUTLASS GEMM\n");
   cudaEventRecord(start);
   status = gemm_op({
-    {M, N, K},
+    {static_cast<int32_t>(M), static_cast<int32_t>(N), static_cast<int32_t>(K)},
     {ptrA, lda},            // TensorRef to A device tensor
     {ptrB, ldb},            // TensorRef to B device tensor
     {ptrC, ldc},            // TensorRef to C device tensor

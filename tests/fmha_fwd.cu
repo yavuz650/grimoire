@@ -1,8 +1,4 @@
-#include <iostream>
-#include <chrono>
 #include <ctime>
-#include <iomanip>
-#include <vector>
 #include <cmath>
 #include <cuda_fp16.h>
 
@@ -119,3 +115,4 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
+
