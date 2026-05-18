@@ -9,6 +9,9 @@ $(BUILD_DIR)/tests/%: %.cu
 $(BUILD_DIR)/tests/fmha_fwd: fmha_fwd.cu ../include/fmha_fwd.cuh ../include/utils.hpp ../include/buffer.cuh
 	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
+$(BUILD_DIR)/tests/mma_f16_f16_tma: mma_f16_f16_tma.cu ../include/sm120_tma_gemm.cuh ../include/utils.hpp ../include/buffer.cuh
+	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
+
 $(BUILD_DIR)/tests/mma_f16_f16_tma_ws: mma_f16_f16_tma_ws.cu ../include/sm120_tma_gemm.cuh ../include/utils.hpp ../include/buffer.cuh
 	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
