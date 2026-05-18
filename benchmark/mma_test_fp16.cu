@@ -156,8 +156,8 @@ int main(int argc, char* argv[]) {
   cta = dim3(128,1,1);
   grid = dim3(N/64,M/64,1);
   smemBytes = 65536;
-  cudaFuncSetAttribute(mma_f16_f16_tma<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2,K>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC);
+  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC, K);
   printf("Finished MMA TMA kernel...\n");
   printf("execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost(); 
@@ -165,7 +165,7 @@ int main(int argc, char* argv[]) {
   cta = dim3(160,1,1);
   grid = dim3(N/64,M/64,1);
   cudaFuncSetAttribute(mma_f16_f16_tma_ws<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2,K>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2,K>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC);
   printf("Finished MMA TMA WS kernel...\n");
   printf("execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost(); 
