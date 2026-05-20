@@ -13,17 +13,16 @@
 
 int main(int argc, char* argv[]) {
 
-  if (argc != 3) {
-    fprintf(stderr, "Usage: %s M N\n", argv[0]);
+  if (argc != 4) {
+    fprintf(stderr, "Usage: %s M N K\n", argv[0]);
     return 1;
   }
 
-  uint64_t M, N;
-  constexpr uint64_t K = 1024;
+  uint64_t M, N, K;
   try {
     M = std::stoull(argv[1]);
     N = std::stoull(argv[2]);
-//    K = std::stoull(argv[3]);
+    K = std::stoull(argv[3]);
   } catch (const std::invalid_argument&) {
     fprintf(stderr, "Error: M, N, K must be integers\n");
     return 1;
@@ -157,8 +156,8 @@ int main(int argc, char* argv[]) {
   cta = dim3(160,1,1);
   grid = dim3(N/64,M/64,1);
   int smemBytes = 65536;
-  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
-  mma_f16_f16_tma_ws<2,K><<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC);
+  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);  
+  mma_f16_f16_tma_ws<2><<<grid, cta, smemBytes>>> (tensorMapA, tensorMapB, tensorMapC, K);
   
   CHECK_CUDA_ERROR(cudaGetLastError());
   CHECK_CUDA_ERROR(cudaDeviceSynchronize());
@@ -199,7 +198,7 @@ int main(int argc, char* argv[]) {
   int ldd = N;
   // Launch GEMM on the device
   status = gemm_op({
-    {static_cast<int32_t>(M), static_cast<int32_t>(N), K},
+    {static_cast<int32_t>(M), static_cast<int32_t>(N), static_cast<int32_t>(K)},
     {ptrA, lda},            // TensorRef to A device tensor
     {ptrB, ldb},            // TensorRef to B device tensor
     {ptrC, ldc},            // TensorRef to C device tensor

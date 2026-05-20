@@ -126,71 +126,76 @@ __global__ void mma_f16_f16_tma(const __grid_constant__ CUtensorMap tensorMapA,
 // Barriers provide the mechanism for synchronization between the specialized warps.                              |
 // The example in the document shows a producer/consumer system where the barriers are used for synchronization.  |
 // ***************************************************************************************************************
-template<size_t StagesCount=2, uint64_t K=64>
+template<size_t StagesCount=2>
 __device__ void dma_ws(cuda::barrier<cuda::thread_scope_block> *ready, 
                        cuda::barrier<cuda::thread_scope_block> *filled, 
                        __half *smemA, __half *smemB,
                        const CUtensorMap *tensorMapA,
-                       const CUtensorMap *tensorMapB) {
+                       const CUtensorMap *tensorMapB,
+                       uint64_t K) {
   auto block = cooperative_groups::this_thread_block();
   int blockRow = block.group_index().y;
   int blockCol = block.group_index().x;
-  for(int i=0; i<K/64; i++) {
-    // wait for buffer_(i%StagesCount) to be ready to be filled
-    int32_t stage = i % StagesCount;
-    ready[stage].arrive_and_wait();
-    // produce, i.e., fill in, buffer_(i%StagesCount)
-    if (threadIdx.x == 128) {
-      // Initiate bulk tensor copy for A.
-      cuda::ptx::cp_async_bulk_tensor(
-        cuda::ptx::space_shared, cuda::ptx::space_global,
-        smemA+stage*64*64, tensorMapA, { i*64, blockRow*64 },
-        cuda::device::barrier_native_handle(filled[stage]));
+  for(int i=0; i<K/64; i+=StagesCount) {
+    #pragma unroll
+    for(int stage=0; stage < StagesCount; stage++) {
+      // wait for buffer_(i%StagesCount) to be ready to be filled
+      ready[stage].arrive_and_wait();
+      // produce, i.e., fill in, buffer_(i%StagesCount)
+      if (threadIdx.x == 128) {
+        // Initiate bulk tensor copy for A.
+        cuda::ptx::cp_async_bulk_tensor(
+          cuda::ptx::space_shared, cuda::ptx::space_global,
+          smemA+stage*64*64, tensorMapA, { (i+stage)*64, blockRow*64 },
+          cuda::device::barrier_native_handle(filled[stage]));
 
-      // Initiate bulk tensor copy for B.
-      cuda::ptx::cp_async_bulk_tensor(
-        cuda::ptx::space_shared, cuda::ptx::space_global,
-        smemB+stage*64*64, tensorMapB, { i*64, blockCol*64 },
-        cuda::device::barrier_native_handle(filled[stage]));
-      // Arrive on the barrier and tell how many bytes are expected to come in.
-      auto token = cuda::device::barrier_arrive_tx(filled[stage], 1, 2*64*64*sizeof(__half));
-    } else { 
-      // Other threads just arrive.
-      auto token = filled[stage].arrive();
+        // Initiate bulk tensor copy for B.
+        cuda::ptx::cp_async_bulk_tensor(
+          cuda::ptx::space_shared, cuda::ptx::space_global,
+          smemB+stage*64*64, tensorMapB, { (i+stage)*64, blockCol*64 },
+          cuda::device::barrier_native_handle(filled[stage]));
+        // Arrive on the barrier and tell how many bytes are expected to come in.
+        auto token = cuda::device::barrier_arrive_tx(filled[stage], 1, 2*64*64*sizeof(__half));
+      } else { 
+        // Other threads just arrive.
+        auto token = filled[stage].arrive();
+      }
     }
   }
 }
 
-template<size_t StagesCount=2, uint64_t K=64>
+template<size_t StagesCount=2>
 __device__ void math_ws(cuda::barrier<cuda::thread_scope_block> *ready, 
                        cuda::barrier<cuda::thread_scope_block> *filled, 
-                       __half *smemA, __half *smemB, float *smemC) {
+                       __half *smemA, __half *smemB, float *smemC, uint64_t K) {
   // Buffers are ready for initial fill
   ready[0].arrive();
   ready[1].arrive();
   int32_t parity[StagesCount];
   parity[0] = 0;
   parity[1] = 0;
-#pragma unroll
-  for(int i=0; i<K/64; i++) {
-    // wait for buffer_(i%StagesCount) to be filled by the producer
-    int32_t stage = i % StagesCount;
-    // Wait for all threads participating in the barrier to complete mbarrier_arrive().
-    // Get a handle to the native barrier to use with cuda::ptx API.
-    //filled[stage].arrive();
-    while (!cuda::ptx::mbarrier_try_wait_parity(cuda::device::barrier_native_handle(filled[stage]), parity[stage])) {}
-    // Flip parity.
-    parity[stage] ^= 1;
-    mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(smemA+stage*64*64,
-                                                    smemB+stage*64*64,
-                                                    smemC);
-    ready[stage].arrive();
+  for(int i=0; i<K/64; i+=StagesCount) {
+    #pragma unroll
+    for(int stage=0; stage < StagesCount; stage++) {
+      // Wait for all threads participating in the barrier to complete mbarrier_arrive().
+      // Get a handle to the native barrier to use with cuda::ptx API.
+      //filled[stage].arrive();
+      while (!cuda::ptx::mbarrier_try_wait_parity(cuda::device::barrier_native_handle(filled[stage]), parity[stage])) {}
+      // Flip parity.
+      parity[stage] ^= 1;
+      mma_m16n8k16_f16_f16_smem_row_col_64x64_swizzle(smemA+stage*64*64,
+                                                      smemB+stage*64*64,
+                                                      smemC);
+      ready[stage].arrive();
+    }
   }
 }
-template<size_t StagesCount=2, uint64_t K=64>
+
+template<size_t StagesCount=2>
 __global__ void mma_f16_f16_tma_ws(const __grid_constant__ CUtensorMap tensorMapA, 
                                    const __grid_constant__ CUtensorMap tensorMapB,
-                                   const __grid_constant__ CUtensorMap tensorMapC) {
+                                   const __grid_constant__ CUtensorMap tensorMapC,
+                                   uint64_t K) {
   // The destination shared memory buffer of a bulk tensor operation should be 128 byte aligned.
   // Additionally, swizzling requires 1024 byte alignment
   // Assuming 5 warps in each CTA: 1 DMA and 4 math 
@@ -219,9 +224,9 @@ __global__ void mma_f16_f16_tma_ws(const __grid_constant__ CUtensorMap tensorMap
 
   // Fifth warp is DMA
   if (block.thread_rank() > 127)
-    dma_ws<StagesCount,K>(bar, bar+2, smemA, smemB, &tensorMapA, &tensorMapB);
+    dma_ws<StagesCount>(bar, bar+2, smemA, smemB, &tensorMapA, &tensorMapB, K);
   else
-    math_ws<StagesCount,K>(bar, bar+2, smemA, smemB, smemC);
+    math_ws<StagesCount>(bar, bar+2, smemA, smemB, smemC, K);
 
   // Wait for shared memory writes to be visible to TMA engine.
   cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);

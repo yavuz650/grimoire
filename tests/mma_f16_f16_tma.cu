@@ -14,7 +14,7 @@
 int main(int argc, char* argv[]) {
 
   if (argc != 4) {
-    fprintf(stderr, "Usage: %s M N\n", argv[0]);
+    fprintf(stderr, "Usage: %s M N K\n", argv[0]);
     return 1;
   }
 
