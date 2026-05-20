@@ -11,16 +11,23 @@
 #include <cutlass/util/host_tensor.h>
 
 int main(int argc, char* argv[]) {
-  // if (argc < 2) {
-  //   std::cerr << "Usage: " << argv[0] << " <integer>\n";
-  //   return 1;
-  // }
-  // int L = std::stoi(argv[1]);
+  if (argc < 4) {
+    std::cerr << "Usage: " << argv[0] << " M N K\n";
+    return 1;
+  }
 
-  // Define the problem size
-  uint64_t M = 2048;
-  uint64_t N = 1024;
-  constexpr uint64_t K = 8192;
+  uint64_t M, N, K;
+  try {
+    M = std::stoull(argv[1]);
+    N = std::stoull(argv[2]);
+    K = std::stoull(argv[3]);
+  } catch (const std::invalid_argument&) {
+    fprintf(stderr, "Error: M, N, K must be integers\n");
+    return 1;
+  } catch (const std::out_of_range&) {
+    fprintf(stderr, "Error: M, N, K value out of range\n");
+    return 1;
+  }
 
   // Allocate memory for matrices on the host
   Buffer A_buffer(M*K,sizeof(__half));
@@ -164,8 +171,8 @@ int main(int argc, char* argv[]) {
 
   cta = dim3(160,1,1);
   grid = dim3(N/64,M/64,1);
-  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2,K>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2,K>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC);
+  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
+  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2>, grid, cta, true, smemBytes, 2, 1, tensorMapA, tensorMapB, tensorMapC, K);
   printf("Finished MMA TMA WS kernel...\n");
   printf("execution time(ms): %f\n", milliseconds);
   C0_buffer.copyToHost(); 
