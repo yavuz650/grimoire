@@ -15,6 +15,9 @@ $(BUILD_DIR)/tests/mma_f16_f16_tma: mma_f16_f16_tma.cu ../include/sm120_tma_gemm
 $(BUILD_DIR)/tests/mma_f16_f16_tma_ws: mma_f16_f16_tma_ws.cu ../include/sm120_tma_gemm.cuh ../include/utils.hpp ../include/buffer.cuh
 	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
 
+$(BUILD_DIR)/tests/mma_f16_f16_tma_ws_persistent: mma_f16_f16_tma_ws_persistent.cu ../include/sm120_tma_gemm.cuh ../include/utils.hpp ../include/buffer.cuh
+	$(NVCC) $(NVCC_FLAGS) $(OPT_FLAGS) $< -o $@
+
 clean:
 	rm -f $(TARGETS)
 

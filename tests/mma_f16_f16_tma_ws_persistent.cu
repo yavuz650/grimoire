@@ -1,4 +1,5 @@
 #include <ctime>
+#include <array>
 #include <cuda_fp16.h>
 
 #include "include/sm120_tma_gemm.cuh"
@@ -11,8 +12,9 @@
 #include <cutlass/util/host_tensor.h>
 
 int main(int argc, char* argv[]) {
-  if (argc < 4) {
-    std::cerr << "Usage: " << argv[0] << " M N K\n";
+
+  if (argc != 4) {
+    fprintf(stderr, "Usage: %s M N K\n", argv[0]);
     return 1;
   }
 
@@ -28,7 +30,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Error: M, N, K value out of range\n");
     return 1;
   }
-
+  
   // Allocate memory for matrices on the host
   Buffer A_buffer(M*K,sizeof(__half));
   Buffer B_buffer(K*N,sizeof(__half));
@@ -46,7 +48,6 @@ int main(int argc, char* argv[]) {
     float val = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     A[i] = __float2half(val);
   }
-
   for (int i = 0; i < K * N; ++i) {
     float val = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
     B[i] = __float2half(val);
@@ -55,16 +56,6 @@ int main(int argc, char* argv[]) {
   A_buffer.copyToDevice();
   B_buffer.copyToDevice();
 
-  // Launch MMA kernel ------------------------
-  dim3 cta;
-  dim3 grid;
-  cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  int smemBytes;
-  float milliseconds;
-
-  printf("Launching Grimoire GPU kernels...\n");
   // Setup the tensor map for TMA
   CUtensorMap tensorMapA{};
   CUtensorMap tensorMapB{};
@@ -83,7 +74,7 @@ int main(int argc, char* argv[]) {
   std::array<uint32_t, rank> elem_stride = {1, 1};
 
   // Create the tensor descriptor.
-  CUresult res = cuTensorMapEncodeTiled(
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapA,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     rank,                       // cuuint32_t tensorRank,
@@ -102,7 +93,7 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
+  ));
 
   // Tensor map for B
   size = {K, N};
@@ -110,7 +101,7 @@ int main(int argc, char* argv[]) {
   // It must be a multiple of 16.
   stride = {K * sizeof(__half)};
   // Create the tensor descriptor.
-  res = cuTensorMapEncodeTiled(
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapB,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     rank,                       // cuuint32_t tensorRank,
@@ -129,17 +120,17 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
+  ));
 
   // Tensor map for C
   size = {N, M};
   // The stride is the number of bytes to traverse from the first element of one row to the next.
   // It must be a multiple of 16.
   stride = {N * sizeof(float)};
-  // Create the tensor descriptor.
   // Inner dimension must be <= 128 bytes for swizzling
   box_size = {32, 64};
-  res = cuTensorMapEncodeTiled(
+  // Create the tensor descriptor.
+  CHECK_CUDA_ERROR(cuTensorMapEncodeTiled(
     &tensorMapC,                // CUtensorMap *tensorMap,
     CUtensorMapDataType::CU_TENSOR_MAP_DATA_TYPE_FLOAT32,
     rank,                       // cuuint32_t tensorRank,
@@ -158,41 +149,27 @@ int main(int argc, char* argv[]) {
     CUtensorMapL2promotion::CU_TENSOR_MAP_L2_PROMOTION_NONE,
     // Any element that is outside of bounds will be set to zero by the TMA transfer.
     CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
-  );
-  
-  // TMA kernel
-  cta = dim3(128,1,1);
-  grid = dim3(N/64,M/64,1);
-  smemBytes = 65536;
-  cudaFuncSetAttribute(mma_f16_f16_tma<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma<2>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC, K);
-  printf("Finished MMA TMA kernel...\n");
-  printf("execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost(); 
+  ));
 
-  // Warp specialized kernel
-  cta = dim3(160,1,1);
-  grid = dim3(N/64,M/64,1);
-  cudaFuncSetAttribute(mma_f16_f16_tma_ws<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernel(mma_f16_f16_tma_ws<2>, grid, cta, true, smemBytes, 2, 10, tensorMapA, tensorMapB, tensorMapC, K);
-  printf("Finished MMA TMA WS kernel...\n");
-  printf("execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost(); 
-
-  // Warp specialized persistent kernel
-  cta = dim3(192,1,1);
-  grid = dim3(84,1,1);
+  // Counter for tile scheduling
   Buffer globalTileCounter(1, sizeof(int32_t));
+  *(static_cast<int32_t*>(globalTileCounter.getHostPtr())) = 0;
   globalTileCounter.copyToDevice();
+  dim3 cta;
+  dim3 grid;
+  // 6 warps
+  cta = dim3(192,1,1);
+  // 84 blocks for 84 SMs in RTX 5080
+  grid = dim3(84,1,1);
+  int smemBytes = 65536;
   cudaFuncSetAttribute(mma_f16_f16_tma_ws_persistent<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, smemBytes);
-  milliseconds = launchAndTimeKernelCleanup(mma_f16_f16_tma_ws_persistent<2>, grid, cta, true, smemBytes, 2, 10, static_cast<int32_t*>(globalTileCounter.getDevicePtr()), M, N, K, static_cast<int32_t*>(globalTileCounter.getDevicePtr()), tensorMapA, tensorMapB, tensorMapC);
-  printf("Finished MMA TMA WS Persistent kernel...\n");
-  printf("execution time(ms): %f\n", milliseconds);
-  C0_buffer.copyToHost(); 
-
+  mma_f16_f16_tma_ws_persistent<2><<<grid, cta, smemBytes>>> (M, N, K, static_cast<int32_t*>(globalTileCounter.getDevicePtr()), tensorMapA, tensorMapB, tensorMapC);
+  
+  CHECK_CUDA_ERROR(cudaGetLastError());
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+  C0_buffer.copyToHost();
   using ElementOutput = float;
   using ElementAccumulator = float;
-
   using Gemm = cutlass::gemm::device::Gemm<
       cutlass::half_t, 
       cutlass::layout::RowMajor, 
@@ -208,7 +185,7 @@ int main(int argc, char* argv[]) {
       cutlass::epilogue::thread::LinearCombination<
           ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
           ElementAccumulator, ElementAccumulator>,
-      cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>;
+      cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 10>;
 
   Gemm gemm_op;
   cutlass::Status status;
@@ -226,8 +203,6 @@ int main(int argc, char* argv[]) {
   int ldc = N;
   int ldd = N;
   // Launch GEMM on the device
-  printf("Launching CUTLASS GEMM\n");
-  cudaEventRecord(start);
   status = gemm_op({
     {static_cast<int32_t>(M), static_cast<int32_t>(N), static_cast<int32_t>(K)},
     {ptrA, lda},            // TensorRef to A device tensor
@@ -236,17 +211,13 @@ int main(int argc, char* argv[]) {
     {ptrD, ldd},            // TensorRef to D device tensor - may be the same as C
     {alpha, beta}           // epilogue operation arguments
   });
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
-  float cutlass_milliseconds = 0;
-  cudaEventElapsedTime(&cutlass_milliseconds, start, stop);
+
   if (status != cutlass::Status::kSuccess) {
     return -1;
   }
-  printf("Finished CUTLASS GEMM\n");
   C1_buffer.copyToHost();
 
-  printf("CUTLASS kernel execution time(ms): %f\n", cutlass_milliseconds);
-
+  compareArrays(static_cast<float*>(C0_buffer.getHostPtr()), static_cast<float*>(C1_buffer.getHostPtr()), C1_buffer.getNumElems());
   return 0;
 }
+

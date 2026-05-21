@@ -1,6 +1,7 @@
 #ifndef __UTILS_HPP__
 #define __UTILS_HPP__
 
+#include <cstdint>
 #include <iostream>
 #include <vector>
 #include <iomanip>
@@ -134,6 +135,62 @@ float launchAndTimeKernel(
   // --------------------
   CHECK_CUDA_ERROR(cudaEventRecord(start));
   for (int i = 0; i < timedIters; ++i) {
+    if(!isDynamicSmem)
+      kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    else
+      kernel<<<gridDim, blockDim, smemBytes>>>(std::forward<Args>(args)...);
+  }
+  CHECK_CUDA_ERROR(cudaEventRecord(stop));
+
+  CHECK_CUDA_ERROR(cudaGetLastError());
+  CHECK_CUDA_ERROR(cudaEventSynchronize(stop));
+
+  float ms = 0.0f;
+  CHECK_CUDA_ERROR(cudaEventElapsedTime(&ms, start, stop));
+
+  CHECK_CUDA_ERROR(cudaEventDestroy(start));
+  CHECK_CUDA_ERROR(cudaEventDestroy(stop));
+
+  // Average time per launch
+  return ms / timedIters;
+}
+
+// Resets the counter to 0 before every kernel launch
+template <typename Kernel, typename... Args>
+float launchAndTimeKernelCleanup(
+    Kernel kernel,
+    dim3 gridDim,
+    dim3 blockDim,
+    bool isDynamicSmem=false,
+    int smemBytes=65536,
+    int warmupIters=2,
+    int timedIters=5,
+    int32_t *counter = nullptr,
+    Args&&... args)
+{
+  cudaEvent_t start, stop;
+  CHECK_CUDA_ERROR(cudaEventCreate(&start));
+  CHECK_CUDA_ERROR(cudaEventCreate(&stop));
+
+  // --------------------
+  // Warm-up
+  // --------------------
+  for (int i = 0; i < warmupIters; ++i) {
+    cudaMemsetAsync(counter, 0, sizeof(int32_t));
+    if(!isDynamicSmem)
+      kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
+    else
+      kernel<<<gridDim, blockDim, smemBytes>>>(std::forward<Args>(args)...);
+  }
+  CHECK_CUDA_ERROR(cudaGetLastError());
+  CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+  // --------------------
+  // Timed runs
+  // --------------------
+  CHECK_CUDA_ERROR(cudaEventRecord(start));
+  for (int i = 0; i < timedIters; ++i) {
+    cudaMemsetAsync(counter, 0, sizeof(int32_t));
     if(!isDynamicSmem)
       kernel<<<gridDim, blockDim>>>(std::forward<Args>(args)...);
     else
