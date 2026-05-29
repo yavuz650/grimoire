@@ -1,7 +1,7 @@
 # Common flags
 NVCC        := nvcc
 ARCH        := -arch=sm_120a
-CXX_FLAGS    := -O3 -std=c++17
+CXX_FLAGS    := -O3 -std=c++20
 INCLUDES    := -I$(CURDIR) -I$(CURDIR)/cutlass/include -I$(CURDIR)/cutlass/tools/util/include
 NVCC_FLAGS   := $(CXX_FLAGS) $(ARCH) $(INCLUDES) --expt-relaxed-constexpr -lcuda -lineinfo -g
 # Allow the user to specify additional flags
