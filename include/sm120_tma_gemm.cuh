@@ -274,8 +274,6 @@ __device__ void dma_ws_persistent(uint64_t M,
     tileReady->arrive_and_wait();
     if(!(*localTileIdx < (M/64 * N/64)))
       return;
-    // if(threadIdx.x % 32 == 0)
-    //   printf("DMA Processing tile %d\n", *localTileIdx);
     blockRow = *localTileIdx / (N/64);
     blockCol = *localTileIdx % (N/64);
     for(int i=0; i<K/64; i+=StagesCount) {
@@ -285,7 +283,6 @@ __device__ void dma_ws_persistent(uint64_t M,
         ready[stage].arrive_and_wait();
         // produce, i.e., fill in, buffer_(i%StagesCount)
         if (threadIdx.x == 128) {
-          // printf("DMA issuing load for tile %d, iter %i\n", *localTileIdx, stage);
           // Initiate bulk tensor copy for A.
           cuda::ptx::cp_async_bulk_tensor(
             cuda::ptx::space_shared, cuda::ptx::space_global,
@@ -332,8 +329,6 @@ __device__ void math_ws_persistent(uint64_t M,
     tileReady->arrive_and_wait();
     if(!(*localTileIdx < (M/64 * N/64)))
       return;
-    // if(threadIdx.x == 0)
-    //   printf("Math Processing tile %d\n", *localTileIdx);
     for (int i = threadIdx.x; i < 64 * 64; i += 128) {
       smemC[i] = 0.0f;
     }
@@ -342,7 +337,6 @@ __device__ void math_ws_persistent(uint64_t M,
       for(int stage=0; stage < StagesCount; stage++) {
         // Wait for all threads participating in the barrier to complete mbarrier_arrive().
         // Get a handle to the native barrier to use with cuda::ptx API.
-        //filled[stage].arrive();
         while (!cuda::ptx::mbarrier_try_wait_parity(cuda::device::barrier_native_handle(filled[stage]), parity[stage])) {}
         // Flip parity.
         parity[stage] ^= 1;
@@ -352,8 +346,6 @@ __device__ void math_ws_persistent(uint64_t M,
         ready[stage].arrive();
       }
     }
-    if(threadIdx.x  == 0)
-      // printf("Math storing tile %d\n", *localTileIdx);
     // Wait for shared memory writes to be visible to TMA engine.
     cuda::ptx::fence_proxy_async(cuda::ptx::space_shared);
     // Initiate TMA transfer to copy shared memory to global memory
@@ -375,8 +367,6 @@ __device__ void math_ws_persistent(uint64_t M,
       cuda::ptx::cp_async_bulk_wait_group_read(cuda::ptx::n32_t<0>());
     }
 
-    // if(threadIdx.x  == 0)
-    //   printf("Math finished tile %d\n", *localTileIdx);
     tileDone->arrive();
   }
 }
@@ -396,8 +386,6 @@ __device__ void sched_ws_persistent(uint64_t M,
       tileDone->arrive_and_wait();
       *localTileIdx = atomicAdd(globalTileCounter, 1);
       tileReady->arrive();
-      // if(threadIdx.x % 32 == 0)
-        // printf("Got tile %d\n", *localTileIdx);
     }
   }
 }
